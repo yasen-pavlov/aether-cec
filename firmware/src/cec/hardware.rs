@@ -15,7 +15,7 @@ pub struct Interrupts {
     pub edges: EdgeRing<256>,
     pub samples: EdgeRing<8>,
     pin: i32,
-    task: usize,
+    task: core::sync::atomic::AtomicUsize,
     ack_at_low: AtomicU32,
     ack_at_high: AtomicU32,
     in_flight: AtomicU32,
@@ -32,9 +32,12 @@ unsafe impl Sync for Interrupts {}
 #[inline(always)]
 unsafe fn notify(context: &Interrupts, timer: bool) {
     let mut wake = 0;
+    if context.task.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     unsafe {
         sys::xTaskGenericNotifyFromISR(
-            context.task as sys::TaskHandle_t,
+            context.task.load(Ordering::Relaxed) as sys::TaskHandle_t,
             0,
             0,
             sys::eNotifyAction_eIncrement,
@@ -180,7 +183,7 @@ impl Hardware {
                 edges: EdgeRing::default(),
                 samples: EdgeRing::default(),
                 pin,
-                task: unsafe { sys::xTaskGetCurrentTaskHandle() as usize },
+                task: core::sync::atomic::AtomicUsize::new(0),
                 ack_at_low: AtomicU32::new(0),
                 ack_at_high: AtomicU32::new(0),
                 in_flight: AtomicU32::new(0),
@@ -297,9 +300,21 @@ impl Hardware {
                 pin,
                 sys::gpio_int_type_t_GPIO_INTR_ANYEDGE
             ))?;
-            sys::esp!(sys::gpio_isr_handler_add(pin, Some(edge_isr), arg))?;
         }
         Ok(hw)
+    }
+    /// Bind ISR notifications to the calling (bus) task and arm the edge interrupt.
+    /// Bench: binding to the constructing task (main, since init moved to core 0)
+    /// left the bus task never woken and wedged boot on a live bus.
+    pub fn arm(&mut self) -> crate::config::Result<()> {
+        let interrupts = &mut **self.interrupts;
+        interrupts.task.store(
+            unsafe { sys::xTaskGetCurrentTaskHandle() } as usize,
+            Ordering::Release,
+        );
+        let arg = (interrupts as *mut Interrupts).cast();
+        sys::esp!(unsafe { sys::gpio_isr_handler_add(interrupts.pin, Some(edge_isr), arg) })?;
+        Ok(())
     }
     pub fn level(&self) -> Level {
         if unsafe { sys::gpio_get_level(self.interrupts.pin) } == 0 {

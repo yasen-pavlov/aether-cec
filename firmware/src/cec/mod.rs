@@ -353,6 +353,9 @@ impl Runner {
         }
     }
     fn run(mut self) -> ! {
+        if let Err(error) = self.hardware.arm() {
+            log::error!("cec_arm_failed {error}");
+        }
         loop {
             self.drain();
             self.commands();
