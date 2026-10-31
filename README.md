@@ -3,10 +3,15 @@
 Rust firmware for an ESP32 HDMI-CEC bridge ("aether") that exposes the CEC bus
 over a native MQTT protocol, plus the host-testable crates it is built from.
 
-Status: pre-alpha. The host-tested CEC core, ESP32 GPIO/RMT bus executor
-and HTTP API/web UI/push OTA are implemented against
-[`docs/protocol.md`](docs/protocol.md). Phase 3 needs hardware timing and
-listener-first bench verification before enabling follower ACK/local replies.
+Status: alpha, bench-verified on a real living-room bus (2026-11-01). The
+host-tested CEC core, the ESP32 GPIO/RMT bus executor and the HTTP API/web
+UI/push OTA are implemented against [`docs/protocol.md`](docs/protocol.md).
+Verified live: promiscuous receive with ACK bits, follower ACK, local identity
+replies, directed and broadcast host sends answered by the receiver and a
+playback device on the first attempt, OTA upgrade and bootloader rollback.
+Known open issue: roughly one in five OTA uploads still ends in a `panic`
+reset (captured by the flash core dump from the next partition-table flash on).
+No host adapter uses the protocol yet (Choregos `bridge.kind = "aether"` is next).
 
 | Crate | Purpose |
 |---|---|
