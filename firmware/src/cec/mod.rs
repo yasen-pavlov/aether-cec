@@ -43,7 +43,10 @@ impl Link {
         }));
         let shared = snapshot.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        ffi::cec::spawn_bus(move || match ffi::cec::Hardware::new(pin) {
+        // Hardware is created on the caller (core 0): creating the RMT channel from
+        // the pinned core-1 thread stalled for a minute on the bench (o-10 trace).
+        let hardware = ffi::cec::Hardware::new(pin).map_err(|e| format!("cec_init_failed {e}"))?;
+        ffi::cec::spawn_bus(move || match Ok::<_, crate::config::Error>(hardware) {
             Ok(hardware) => {
                 let _ = ready_tx.send(None);
                 Runner::new(Init {
@@ -67,10 +70,10 @@ impl Link {
                 }
             }
         })?;
-        match ready_rx.recv() {
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(None) => {}
             Ok(Some(error)) => log::error!("cec_init_failed {error}"),
-            Err(_) => log::error!("cec_init_failed thread"),
+            Err(_) => log::error!("cec_init_failed timeout"),
         }
         Ok(Self {
             commands,

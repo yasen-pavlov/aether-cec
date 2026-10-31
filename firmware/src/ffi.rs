@@ -48,14 +48,18 @@ pub fn install_console_uart() -> Result<(), sys::EspError> {
             }
         }
     }
-    // RX retains pasted console lines. Buffered TX avoids the zero-buffer
-    // synchronous FIFO path for every byte written by the UART VFS.
+    // Bench: with a TX ring buffer the ESP32 UART0 re-sent suffixes of the last
+    // line hundreds of times (4 MB in 100 s), saturating the console and starving
+    // OTA uploads. Synchronous TX (no ring buffer, single FIFO writer) and a
+    // drained FIFO at install time are the measured fix; the hardware cause is
+    // not pinned down (see decisions.md).
     if !unsafe { sys::uart_is_driver_installed(sys::uart_port_t_UART_NUM_0) } {
+        unsafe { sys::uart_wait_tx_idle_polling(sys::uart_port_t_UART_NUM_0) };
         sys::esp!(unsafe {
             sys::uart_driver_install(
                 sys::uart_port_t_UART_NUM_0,
                 512,
-                1024,
+                0,
                 0,
                 core::ptr::null_mut(),
                 0,

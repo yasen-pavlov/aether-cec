@@ -135,11 +135,12 @@ unsafe extern "C" fn tx_done_isr(
 /// spawn. Large SDK config aggregates are passed by reference across the ABI.
 pub fn spawn_bus(run: impl FnOnce() + Send + 'static) -> crate::config::Result<()> {
     unsafe {
-        let mut previous = sys::esp_pthread_get_default_config();
-        let _ = sys::esp_pthread_get_cfg(&mut previous);
-        let mut cfg = previous;
+        // Bench (o-12): priority 22 (= esp_timer task) never got scheduled on core 1,
+        // and restoring a cfg read with esp_pthread_get_cfg on a thread without one
+        // returned ESP_ERR_INVALID_ARG. Use 20 and reset to the SDK default after.
+        let mut cfg = sys::esp_pthread_get_default_config();
         cfg.stack_size = 12288;
-        cfg.prio = 22;
+        cfg.prio = 20;
         cfg.pin_to_core = 1;
         cfg.inherit_cfg = false;
         cfg.thread_name = c"cec-bus".as_ptr();
@@ -148,7 +149,8 @@ pub fn spawn_bus(run: impl FnOnce() + Send + 'static) -> crate::config::Result<(
             .name("cec-bus".into())
             .stack_size(12288)
             .spawn(run);
-        let restored = sys::esp_pthread_set_cfg(&previous);
+        let default = sys::esp_pthread_get_default_config();
+        let restored = sys::esp_pthread_set_cfg(&default);
         spawned?;
         sys::esp!(restored)?;
     }
@@ -166,6 +168,9 @@ pub struct Hardware {
     enabled: bool,
     service_owned: bool,
 }
+// SAFETY: the handles are owned exclusively by the bus task after construction
+// on main; esp-idf driver handles are not core-affine.
+unsafe impl Send for Hardware {}
 impl Hardware {
     /// Called on core 1, so GPIO and RMT interrupt allocation is on core 1.
     pub fn new(pin: u8) -> crate::config::Result<Self> {
@@ -214,7 +219,7 @@ impl Hardware {
                 resolution_hz: 1_000_000,
                 mem_block_symbols: 64,
                 trans_queue_depth: 4,
-                intr_priority: 3,
+                intr_priority: 0,
                 ..Default::default()
             };
             cfg.flags.set_io_od_mode(1);
