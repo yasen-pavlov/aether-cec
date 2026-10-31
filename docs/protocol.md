@@ -365,7 +365,6 @@ Malformed command JSON receives `ok:false, reason:"malformed"` with `id` omitted
 | `ping` | `{"id":…,"echo":"…"}` | result carries device `t_us`; host uses RTT/2 to map `t_us` onto wall time (sub-10 ms absolute, µs relative) |
 | `restart` | `{"id":…}` | publishes `status {"online":false}` then reboots |
 | `reset` | `{"id":…,"confirm":"<node>"}` | restore default CEC config in NVS, preserving provisioned `node` and Wi-Fi/MQTT secrets; restart |
-| `ota` | §9 | |
 
 Commands are processed in order of arrival; `cmd/result` is QoS 1.
 Serial `factory-reset` is deliberately stronger: erase the entire default NVS
@@ -373,23 +372,20 @@ partition, including config, node, secrets and boot counter, then reboot.
 
 ---
 
-## 9. OTA
+## 9. OTA (push, over the HTTP API)
 
-Pull model: the host (or a human) points the bridge at an HTTPS URL; the bridge streams the image
-into the inactive OTA partition, verifies SHA-256, reboots, and confirms the new image
-on the main task after MQTT connects. During phase 2, which has the rollback-capable
-boot layout but no OTA downloader, a 60 s timeout also marks the image valid if
-MQTT never connects: first-flash provisioning must not cause an infinite rollback
-loop without a broker. Phase 5 must replace this provisioning exception with
-pending-OTA-aware confirmation: a pending OTA must publish `status` within 60 s,
-or restore the previous image. OTA download/progress is not implemented in phase 2.
+Push model (decided 2026-10-31, replacing the earlier pull-by-URL draft): the bridge sits on an IoT
+VLAN that may not reach any image host, while operators and CI on the LAN can always reach the
+bridge. An operator uploads the image to the bridge's HTTP API (§11, `POST /api/ota`); the bridge
+streams it into the inactive OTA partition, verifies SHA-256, reboots, and confirms the new image
+only after MQTT connects and `status` is published. A pending OTA that cannot publish `status`
+within 60 s is rolled back by the bootloader on the next reset. A non-OTA boot (first USB flash,
+provisioning without a broker) also confirms after 60 s so a fresh board never rollback-loops.
+
+Progress is published on MQTT `ota` and on the HTTP event stream:
 
 ```json
-// cmd/ota
-{"id":"o-1","url":"https://github.com/<owner>/<repo>/releases/download/v0.2.0/aether-esp32.bin",
- "sha256":"…64 hex…"}
-// ota (progress)
-{"id":"o-1","state":"downloading","pct":37,"fw":"0.2.0"}
+{"id":"o-1","state":"receiving","pct":37}
 {"id":"o-1","state":"verifying"}
 {"id":"o-1","state":"rebooting"}
 {"id":"o-1","state":"failed","reason":"sha256_mismatch"}
@@ -397,26 +393,50 @@ or restore the previous image. OTA download/progress is not implemented in phase
 {"id":"o-1","state":"confirmed","fw":"0.2.0"}   // or "rolled_back" from the old one
 ```
 
-`id` and the pending state survive the reboot in NVS so the confirmation can be attributed. Rules:
-HTTPS only (ESP-IDF certificate bundle), `sha256` mandatory, image must be built for the same
-`type`/board (embedded project name check), OTA refused while a `tx` is in flight. Push-over-MQTT
-(chunked) was considered and rejected: more firmware code, no benefit on a LAN with a release URL.
-
----
+`id` (bridge-assigned, `o-<n>`) and the pending state survive the reboot in NVS so the confirmation
+can be attributed. Rules: `X-Sha256` header mandatory and checked before the slot is activated;
+image must be an esp-idf app image for the same project name; OTA is refused (`409`) while another
+OTA is in progress; a CEC `tx` in flight is allowed to finish before the reboot. There is no MQTT
+`cmd/ota`.
 
 ## 10. Provisioning (out of band — recorded here so the contract is complete)
 
-Wi-Fi SSID/password, MQTT host/port/user/password/TLS, and `node` are provisioned over the USB
-serial console (`aether> set wifi …`, stored in NVS, never echoed back) or baked in at build time for
-bench units. They are not readable or writable over MQTT. Tasmota's captive portal is dropped for v1;
-the bridge is a fixed-IP device with a DHCP reservation and a Mosquitto ACL, both tied to its MAC.
-
-Broker-side prerequisite: ACL for the bridge user must allow `aether/<node>/#` (read/write)
-in addition to the existing Tasmota topics for the transition period.
+Wi-Fi SSID/password, MQTT host/port/user/password/TLS, `node`, and the HTTP API token are
+provisioned over the USB serial console (`aether> set wifi …`, stored in NVS, never echoed back).
+They are not readable or writable over MQTT or HTTP. Tasmota's captive portal is dropped for v1;
+the bridge is a fixed-IP device with a DHCP reservation and a broker account tied to its MAC.
 
 ---
 
-## 11. Mapping onto Choregos (`bridge.kind = "aether"`)
+## 11. HTTP API and web UI
+
+One HTTP server on port 80, LAN-only (the IoT VLAN firewall is the perimeter; TLS is not offered
+because the device has no certificate). Bodies are the exact same JSON objects as the MQTT payloads;
+every handler calls the same logic as the MQTT verb, so the web UI, Choregos, `curl` and
+`mosquitto_pub` speak one dialect.
+
+Authentication: `Authorization: Bearer <token>` on every endpoint except `GET /`, static assets and
+`GET /healthz`. The token is 32 random bytes (hex) generated on first boot, stored with the other
+secrets, printed by console `show token`, replaced by `set token <hex>`. Missing/wrong token → `401`.
+
+| Method | Path | Body / response |
+|---|---|---|
+| `GET` | `/` | web UI (one HTML, one CSS, vanilla JS; no build step) |
+| `GET` | `/healthz` | `{"online":true,"fw":…,"boot":…}` — unauthenticated, for monitoring |
+| `GET` | `/api/status` | §3 object |
+| `GET` | `/api/cfg` | §7 object |
+| `PUT` | `/api/cfg` | partial §7 object → `cmd/result`-shaped reply, same validation as `cmd/cfg` |
+| `POST` | `/api/cmd/<verb>` | `ping` \| `state` \| `restart` \| `reset`: same payload and result as §8 |
+| `POST` | `/api/tx` | §4 request → `202`; the outcome is a `bus` event (SSE and MQTT) |
+| `GET` | `/api/events` | `text/event-stream`: every `bus` event, `status` change and `ota` progress, as they are published to MQTT; `event:` = topic suffix, `data:` = payload |
+| `GET` | `/api/log` | last 64 `log` lines as a JSON array, regardless of `cfg.log` |
+| `POST` | `/api/ota` | raw image body, `Content-Length` set, `X-Sha256: <64 hex>` → `202 {"id":"o-1"}`; `400` bad digest/header, `409` busy, `413` too big for the slot |
+
+HTTP errors use `{"ok":false,"reason":"…"}` with the §8 reason vocabulary plus `unauthorized`,
+`not_found`, `too_large`, `busy`. At most 4 concurrent connections; SSE clients count against that.
+The web UI shows status, the live bus log, the cfg form and the OTA upload; it never shows secrets.
+
+## 12. Mapping onto Choregos (`bridge.kind = "aether"`)
 
 | Protocol | Choregos today | Change |
 |---|---|---|
