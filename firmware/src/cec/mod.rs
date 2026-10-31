@@ -45,7 +45,7 @@ impl Link {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         ffi::cec::spawn_bus(move || match ffi::cec::Hardware::new(pin) {
             Ok(hardware) => {
-                let _ = ready_tx.send(true);
+                let _ = ready_tx.send(None);
                 Runner::new(Init {
                     core,
                     listener,
@@ -57,12 +57,20 @@ impl Link {
                 })
                 .run();
             }
-            Err(_) => {
-                let _ = ready_tx.send(false);
+            Err(error) => {
+                // Bench lesson (o-4 rolled back blind): a bus init failure must leave
+                // MQTT/HTTP running so the error is readable. Drain commands forever.
+                let _ = ready_tx.send(Some(error.to_string()));
+                shared.lock().unwrap().idle = true;
+                for _ in rx {
+                    pending_task.fetch_sub(1, Ordering::Release);
+                }
             }
         })?;
-        if !ready_rx.recv().unwrap_or(false) {
-            return Err("cec_init_failed".into());
+        match ready_rx.recv() {
+            Ok(None) => {}
+            Ok(Some(error)) => log::error!("cec_init_failed {error}"),
+            Err(_) => log::error!("cec_init_failed thread"),
         }
         Ok(Self {
             commands,

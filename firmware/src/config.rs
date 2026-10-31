@@ -30,6 +30,7 @@ impl Store {
         let system = EspDefaultNvs::new(partition.clone(), "system", true)?;
         let boot = system.get_u32("boot")?.unwrap_or(0).wrapping_add(1);
         system.set_u32("boot", boot)?;
+        install_panic_record(system)?;
         Ok(Self {
             cfg: EspDefaultNvs::new(partition.clone(), "cfg", true)?,
             ota: std::sync::Arc::new(std::sync::Mutex::new(EspDefaultNvs::new(
@@ -70,4 +71,25 @@ pub fn read_json(nvs: &EspDefaultNvs, key: &str) -> Result<Option<Vec<u8>>> {
     let mut buf = vec![0; len];
     nvs.get_blob(key, &mut buf)?.ok_or("NVS key disappeared")?;
     Ok(Some(buf))
+}
+
+/// The previous boot's panic message, if any, is logged once and cleared; the
+/// hook stores the next one. Lets a rolled-back OTA image be diagnosed from
+/// the surviving image's `/api/log` without a serial cable.
+fn install_panic_record(system: EspDefaultNvs) -> Result<()> {
+    let mut buf = [0_u8; 160];
+    if let Ok(Some(previous)) = system.get_str("panic", &mut buf) {
+        log::error!("last_panic {previous}");
+        system.remove("panic")?;
+    }
+    let system = std::sync::Mutex::new(system);
+    std::panic::set_hook(Box::new(move |info| {
+        let text = info.to_string();
+        let cut = text.char_indices().nth(150).map_or(text.len(), |(i, _)| i);
+        if let Ok(system) = system.try_lock() {
+            let _ = system.set_str("panic", &text[..cut]);
+        }
+        println!("{text}");
+    }));
+    Ok(())
 }
