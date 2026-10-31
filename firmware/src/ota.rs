@@ -86,12 +86,17 @@ impl Health {
         }
         match boot_action(self.kind, published, self.started.elapsed().as_secs()) {
             BootAction::Wait => {}
-            BootAction::Rollback => ffi::restart(), // rollback-enabled bootloader rejects PENDING_VERIFY on reset
+            BootAction::Rollback => {
+                log::info!("ota_rollback_requested");
+                ffi::restart(); // rollback-enabled bootloader rejects PENDING_VERIFY on reset
+            }
             BootAction::ConfirmUpdate => {
                 if !ffi::confirm_app() {
                     return;
                 }
                 self.rollback_timer = None;
+                log::info!("pending_image_confirm");
+                log::info!("ota_confirmed");
                 self.kind = BootKind::Valid;
                 self.report = Some(OtaState::Confirmed);
                 // A failed/missing NVS record never prevents safe confirmation.
@@ -99,7 +104,12 @@ impl Health {
                     self.done = true;
                 }
             }
-            BootAction::ReportRollback => self.report = Some(OtaState::RolledBack),
+            BootAction::ReportRollback => {
+                if self.report.is_none() {
+                    log::info!("ota_rolled_back");
+                    self.report = Some(OtaState::RolledBack);
+                }
+            }
         }
         if let (Some(state), Some(pending), Some(store)) = (self.report, &self.pending, store) {
             if emit(&progress(&pending.id, state, None, None))

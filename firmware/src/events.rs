@@ -59,10 +59,8 @@ static LOGS: LazyLock<Mutex<LogRing>> = LazyLock::new(Default::default);
 pub fn logs() -> &'static Mutex<LogRing> {
     &LOGS
 }
-struct Logger(esp_idf_svc::log::EspLogger);
-static LOGGER: Logger = Logger(esp_idf_svc::log::EspLogger::new(
-    esp_idf_svc::log::EspIdfLogFilter::new(),
-));
+struct Logger;
+static LOGGER: Logger = Logger;
 impl log::Log for Logger {
     fn enabled(&self, meta: &log::Metadata<'_>) -> bool {
         meta.target().split("::").next() == Some("aether") && meta.level() <= log::Level::Info
@@ -71,7 +69,13 @@ impl log::Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        self.0.log(record);
+        let t_us = crate::ffi::now_us();
+        println!(
+            "{} {t_us} {}: {}",
+            record.level(),
+            record.target(),
+            record.args()
+        );
         let lvl = match record.level() {
             log::Level::Error => LogLevel::Error,
             log::Level::Warn => LogLevel::Warn,
@@ -80,7 +84,7 @@ impl log::Log for Logger {
         // Only this application's scrubbed codes; dependency diagnostics never enter the ring.
         let text = record.args().to_string();
         let mut entry = LogLine {
-            t_us: crate::ffi::now_us(),
+            t_us,
             lvl,
             msg: Default::default(),
         };
@@ -92,7 +96,8 @@ impl log::Log for Logger {
         logs().lock().unwrap().push(entry);
     }
     fn flush(&self) {
-        self.0.flush();
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
     }
 }
 pub fn initialize() {

@@ -24,12 +24,19 @@ pub struct Message {
 #[derive(Default)]
 struct Control {
     connected: AtomicBool,
+    disconnected: AtomicBool,
     connects: AtomicU32,
     pending_puback: AtomicU32,
     shutdown_acked: AtomicBool,
     status_id: AtomicU32,
     status_acked: AtomicBool,
     last_published: AtomicU32,
+}
+pub struct Publication<'a, T: ?Sized> {
+    pub topic: &'a str,
+    pub qos: QoS,
+    pub retain: bool,
+    pub value: &'a T,
 }
 pub struct MqttLink {
     pub client: EspMqttClient<'static>,
@@ -88,6 +95,7 @@ impl MqttLink {
                     None
                 }
                 EventPayload::Disconnected => {
+                    control_cb.disconnected.store(true, Ordering::Release);
                     assembler.clear();
                     control_cb.connected.store(false, Ordering::Release);
                     control_cb.status_acked.store(false, Ordering::Release);
@@ -154,9 +162,13 @@ impl MqttLink {
         self.control.connected.load(Ordering::Acquire)
     }
     pub fn new_connection(&mut self) -> bool {
+        if self.control.disconnected.swap(false, Ordering::AcqRel) {
+            log::info!("mqtt_disconnected");
+        }
         let connects = self.control.connects.load(Ordering::Acquire);
         if self.connected() && self.connects != connects {
             self.connects = connects;
+            log::info!("mqtt_connected");
             true
         } else {
             false
@@ -179,7 +191,13 @@ impl MqttLink {
     pub fn status_published(&self) -> bool {
         self.connected() && self.control.status_acked.load(Ordering::Acquire)
     }
-    pub fn publish(&mut self, topic: &str, qos: QoS, retain: bool, payload: &[u8]) -> Option<u32> {
+    pub fn publish(&mut self, message: Publication<'_, [u8]>) -> Option<u32> {
+        let Publication {
+            topic,
+            qos,
+            retain,
+            value: payload,
+        } = message;
         self.hub.publish(topic, payload);
         match self.client.enqueue(topic, qos, retain, payload) {
             Ok(id) => {
@@ -194,15 +212,20 @@ impl MqttLink {
             }
         }
     }
-    pub fn json(
-        &mut self,
-        topic: &str,
-        qos: QoS,
-        retain: bool,
-        value: &impl serde::Serialize,
-    ) -> Option<u32> {
+    pub fn json(&mut self, message: Publication<'_, impl serde::Serialize>) -> Option<u32> {
+        let Publication {
+            topic,
+            qos,
+            retain,
+            value,
+        } = message;
         match serde_json::to_vec(value) {
-            Ok(bytes) => self.publish(topic, qos, retain, &bytes),
+            Ok(bytes) => self.publish(Publication {
+                topic,
+                qos,
+                retain,
+                value: &bytes,
+            }),
             Err(_) => {
                 self.dropped = self.dropped.saturating_add(1);
                 self.pending_overrun = self.pending_overrun.saturating_add(1);
@@ -235,7 +258,12 @@ impl MqttLink {
             dropped: Some(dropped),
         };
         if self
-            .json(&Topics::bus(node), QoS::AtLeastOnce, false, &event)
+            .json(Publication {
+                topic: &Topics::bus(node),
+                qos: QoS::AtLeastOnce,
+                retain: false,
+                value: &event,
+            })
             .is_some()
         {
             self.pending_overrun -= dropped;

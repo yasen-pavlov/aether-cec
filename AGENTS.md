@@ -34,6 +34,12 @@ what, why).
   copies, or defaults.
 - Public repo from day one: lab-specific values (MACs, IPs, topics) belong in
   examples, not in code.
+- Xtensa esp Rust 1.97/esp-clang 21 has a bench-observed stack-argument ABI bug.
+  Firmware-owned functions/methods must have at most four parameters (including
+  `self`); bundle lists of five or more into one struct argument. Audit by-value
+  aggregates (`Status`, `Config`, `Arc`, `String`, tuples, etc.) as well as scalar
+  arguments when adding calls. Keep these workarounds in firmware, not the
+  host-tested logic/protocol/core crates; ESP-IDF C ABI signatures are unchanged.
 
 ## Commands
 ```

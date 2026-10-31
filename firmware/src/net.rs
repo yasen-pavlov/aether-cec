@@ -10,6 +10,7 @@ pub struct Net {
     pub wifi: EspWifi<'static>,
     configured: bool,
     last_connect: Instant,
+    connected: bool,
 }
 impl Net {
     pub fn new(
@@ -57,9 +58,15 @@ impl Net {
             wifi,
             configured,
             last_connect: Instant::now(),
+            connected: false,
         })
     }
     pub fn poll(&mut self) {
+        let connected = self.wifi.is_up().unwrap_or(false);
+        if connected && !self.connected {
+            log::info!("wifi_connected ip={}", self.ip());
+        }
+        self.connected = connected;
         if self.configured
             && !self.wifi.is_connected().unwrap_or(false)
             && self.last_connect.elapsed() >= Duration::from_secs(5)

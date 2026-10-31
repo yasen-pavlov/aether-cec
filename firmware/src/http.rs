@@ -44,7 +44,7 @@ pub struct Http {
     _sse: crate::ffi::SseRegistration,
     _server: EspHttpServer<'static>,
 }
-/// Constructor inputs. One by-reference argument: on the bench, passing these
+/// Constructor inputs. One struct argument: on the bench, passing these
 /// six values as separate by-value parameters delivered a garbage `hub`
 /// pointer (0xa5a5a5a5 stack fill) with the esp Rust 1.97 toolchain, i.e. a
 /// caller/callee stack-argument mismatch on Xtensa. Keep call signatures small.
@@ -257,6 +257,7 @@ fn upload(mut req: Req<'_, '_>, state: &Shared) -> std::result::Result<(), EspIO
     let result = receive(&mut req, state);
     match result {
         Ok(id) => {
+            log::info!("ota_accepted");
             let result = response(
                 req,
                 202,
@@ -268,6 +269,7 @@ fn upload(mut req: Req<'_, '_>, state: &Shared) -> std::result::Result<(), EspIO
             result
         }
         Err(reason) => {
+            log::info!("ota_failed");
             state.busy.store(false, Ordering::Release);
             error(req, reason)
         }
@@ -342,6 +344,7 @@ fn receive(
             return Err("malformed");
         }
         drop(nvs);
+        log::info!("ota_verified");
         Ok(())
     })();
     emit(progress.finished(result));

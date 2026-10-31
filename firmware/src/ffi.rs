@@ -7,10 +7,9 @@ esp_idf_svc::sys::esp_app_desc!();
 
 pub fn private_logging() {
     // SDK network diagnostics can contain SSIDs, broker names and URLs.
-    // Permit only our scrubbed application records after provisioning is read.
+    // Rust application records use events::Logger directly, not IDF tag filters.
     unsafe {
         sys::esp_log_level_set(c"*".as_ptr(), sys::esp_log_level_t_ESP_LOG_NONE);
-        sys::esp_log_level_set(c"aether".as_ptr(), sys::esp_log_level_t_ESP_LOG_INFO);
     }
 }
 pub fn now_us() -> u64 {
@@ -31,14 +30,29 @@ pub fn restart() -> ! {
 }
 
 pub fn install_console_uart() -> Result<(), sys::EspError> {
-    // RX interrupts buffer a whole pasted console line; TX remains synchronous,
-    // shared with EspLogger. VFS driver reads block instead of polling the FIFO.
+    use std::io::Write;
+    // Drain Rust's line buffer and newlib's early-log buffers before changing
+    // VFS backends. Newlib remains unbuffered; subsequent flushes cannot replay
+    // an old C stdio buffer. This runs before console/network worker startup.
+    let _ = std::io::stdout().flush();
+    unsafe {
+        let reent = &mut *sys::__getreent();
+        for stream in [reent._stdout, reent._stderr] {
+            if sys::fflush(stream) != 0
+                || sys::setvbuf(stream, core::ptr::null_mut(), sys::_IONBF as i32, 0) != 0
+            {
+                return Err(sys::EspError::from_infallible::<{ sys::ESP_FAIL }>());
+            }
+        }
+    }
+    // RX retains pasted console lines. Buffered TX avoids the zero-buffer
+    // synchronous FIFO path for every byte written by the UART VFS.
     if !unsafe { sys::uart_is_driver_installed(sys::uart_port_t_UART_NUM_0) } {
         sys::esp!(unsafe {
             sys::uart_driver_install(
                 sys::uart_port_t_UART_NUM_0,
                 512,
-                0,
+                1024,
                 0,
                 core::ptr::null_mut(),
                 0,

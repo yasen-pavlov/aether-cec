@@ -20,7 +20,7 @@ use config::{Result, Store};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop, hal::peripherals::Peripherals, mqtt::client::QoS,
 };
-use mqtt::MqttLink;
+use mqtt::{MqttLink, Publication};
 use std::{
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -58,12 +58,16 @@ fn recovery(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> ! {
         match console.recv_timeout(Duration::from_millis(100)) {
             Ok(ConsoleCommand::Show) => println!("mode=console-only fw={FW} startup_error"),
             Ok(ConsoleCommand::FactoryReset) => {
+                log::info!("factory_reset_requested");
                 if ffi::erase_nvs().is_ok() {
                     ffi::restart();
                 }
                 println!("storage_error");
             }
-            Ok(ConsoleCommand::Reboot) => ffi::restart(),
+            Ok(ConsoleCommand::Reboot) => {
+                log::info!("restart_requested");
+                ffi::restart();
+            }
             Ok(_) => println!("startup_error: use show / factory-reset / reboot"),
             Err(_) => {}
         }
@@ -148,6 +152,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     match store.save_config(&candidate) {
                         Ok(()) => {
                             cfg = candidate;
+                            log::info!("cfg_change_applied");
                             println!("saved; reboot to apply");
                         }
                         Err(_) => println!("storage_error"),
@@ -191,8 +196,12 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                         FW
                     );
                 }
-                ConsoleCommand::Reboot => shutdown = Some(begin_shutdown(mqtt.as_mut(), &node)),
+                ConsoleCommand::Reboot => {
+                    log::info!("restart_requested");
+                    shutdown = Some(begin_shutdown(mqtt.as_mut(), &node));
+                }
                 ConsoleCommand::FactoryReset => {
+                    log::info!("factory_reset_requested");
                     // Erase the entire default partition, including system/node/secrets.
                     if ffi::erase_nvs().is_ok() {
                         shutdown = Some(begin_shutdown(mqtt.as_mut(), &node));
@@ -205,17 +214,22 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         if let Some(link) = mqtt.as_mut() {
             if link.new_connection() {
                 let ip = net.ip();
-                let published = link.json(
-                    &Topics::status(&node),
-                    QoS::AtLeastOnce,
-                    true,
-                    &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
-                );
+                let published = link.json(Publication {
+                    topic: &Topics::status(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: true,
+                    value: &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
+                });
                 if let Some(id) = published {
                     link.watch_status(id);
                 }
                 status_retry_at = Instant::now();
-                link.json(&Topics::cfg(&node), QoS::AtLeastOnce, true, &cfg);
+                link.json(Publication {
+                    topic: &Topics::cfg(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: true,
+                    value: &cfg,
+                });
                 let tx = link.client.subscribe(&Topics::tx(&node), QoS::AtLeastOnce);
                 let cmd = link
                     .client
@@ -231,12 +245,12 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 && status_retry_at.elapsed() >= Duration::from_secs(5)
             {
                 let ip = net.ip();
-                if let Some(id) = link.json(
-                    &Topics::status(&node),
-                    QoS::AtLeastOnce,
-                    true,
-                    &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
-                ) {
+                if let Some(id) = link.json(Publication {
+                    topic: &Topics::status(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: true,
+                    value: &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
+                }) {
                     link.watch_status(id);
                 }
                 status_retry_at = Instant::now();
@@ -251,23 +265,39 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 }
                 if topic == Topics::tx(&node).as_str() {
                     let event = aether_logic::bus::reject(&mut bridge, &data, ffi::now_us());
-                    link.json(&Topics::bus(&node), QoS::AtLeastOnce, false, &event);
+                    link.json(Publication {
+                        topic: &Topics::bus(&node),
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        value: &event,
+                    });
                 } else if let Some(verb) = topic
                     .strip_prefix(&format!("aether/{node}/cmd/"))
                     .and_then(commands::verb)
                 {
                     let mut plan = commands::plan(verb, &data, &cfg, ffi::now_us());
-                    apply_plan(&mut plan, &store, &mut cfg, &mut bridge, &mut power);
+                    apply_plan(ApplyPlan {
+                        plan: &mut plan,
+                        store: &store,
+                        cfg: &mut cfg,
+                        bridge: &mut bridge,
+                        power: &mut power,
+                    });
                     if plan.result.ok && matches!(plan.effect, Effect::Config) {
                         telemetry_at = Instant::now();
-                        link.json(&Topics::cfg(&node), QoS::AtLeastOnce, true, &cfg);
+                        link.json(Publication {
+                            topic: &Topics::cfg(&node),
+                            qos: QoS::AtLeastOnce,
+                            retain: true,
+                            value: &cfg,
+                        });
                     }
-                    link.json(
-                        &Topics::result(&node),
-                        QoS::AtLeastOnce,
-                        false,
-                        &plan.result,
-                    );
+                    link.json(Publication {
+                        topic: &Topics::result(&node),
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        value: &plan.result,
+                    });
                     if plan.result.ok && matches!(plan.effect, Effect::Restart | Effect::Reset) {
                         shutdown = Some(begin_shutdown(Some(link), &node));
                     }
@@ -280,19 +310,24 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 && telemetry_at.elapsed() >= Duration::from_secs(u64::from(cfg.telemetry_s))
             {
                 let ip = net.ip();
-                link.json(
-                    &Topics::telemetry(&node),
-                    QoS::AtMostOnce,
-                    false,
-                    &status::telemetry(&snapshot(&store, &net, Some(link), &ip)),
-                );
+                link.json(Publication {
+                    topic: &Topics::telemetry(&node),
+                    qos: QoS::AtMostOnce,
+                    retain: false,
+                    value: &status::telemetry(&snapshot(&store, &net, Some(link), &ip)),
+                });
                 telemetry_at = Instant::now();
             }
         }
         if let Some(link) = mqtt.as_mut() {
             health.poll(link.status_published(), Some(&store), |event| {
-                link.json(&Topics::ota(&node), QoS::AtLeastOnce, false, event)
-                    .is_some()
+                link.json(Publication {
+                    topic: &Topics::ota(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: false,
+                    value: event,
+                })
+                .is_some()
             });
         } else {
             health.poll(false, Some(&store), |_| false);
@@ -311,21 +346,32 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
             }
             let (code, bytes) = if let Some(verb) = operation.verb {
                 let mut plan = commands::plan(verb, &operation.data, &cfg, ffi::now_us());
-                apply_plan(&mut plan, &store, &mut cfg, &mut bridge, &mut power);
+                apply_plan(ApplyPlan {
+                    plan: &mut plan,
+                    store: &store,
+                    cfg: &mut cfg,
+                    bridge: &mut bridge,
+                    power: &mut power,
+                });
                 if plan.result.ok && matches!(plan.effect, Effect::Config) {
                     telemetry_at = Instant::now();
                     *http.shared.cfg.lock().unwrap() = cfg.clone();
                     if let Some(link) = mqtt.as_mut() {
-                        link.json(&Topics::cfg(&node), QoS::AtLeastOnce, true, &cfg);
+                        link.json(Publication {
+                            topic: &Topics::cfg(&node),
+                            qos: QoS::AtLeastOnce,
+                            retain: true,
+                            value: &cfg,
+                        });
                     }
                 }
                 if let Some(link) = mqtt.as_mut() {
-                    link.json(
-                        &Topics::result(&node),
-                        QoS::AtLeastOnce,
-                        false,
-                        &plan.result,
-                    );
+                    link.json(Publication {
+                        topic: &Topics::result(&node),
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        value: &plan.result,
+                    });
                 }
                 if plan.result.ok && matches!(plan.effect, Effect::Restart | Effect::Reset) {
                     shutdown = Some(begin_shutdown(mqtt.as_mut(), &node));
@@ -345,7 +391,12 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 let event = aether_logic::bus::reject(&mut bridge, &operation.data, ffi::now_us());
                 let bytes = serde_json::to_vec(&event)?;
                 if let Some(link) = mqtt.as_mut() {
-                    link.publish(&Topics::bus(&node), QoS::AtLeastOnce, false, &bytes);
+                    link.publish(Publication {
+                        topic: &Topics::bus(&node),
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        value: &bytes,
+                    });
                 } else {
                     hub.publish("bus", &bytes);
                 }
@@ -357,7 +408,12 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         for progress in http.progress.try_iter() {
             let bytes = serde_json::to_vec(&progress)?;
             if let Some(link) = mqtt.as_mut() {
-                link.publish(&Topics::ota(&node), QoS::AtLeastOnce, false, &bytes);
+                link.publish(Publication {
+                    topic: &Topics::ota(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: false,
+                    value: &bytes,
+                });
             } else {
                 hub.publish("ota", &bytes);
             }
@@ -420,12 +476,12 @@ fn report(result: Result<()>) {
 }
 fn begin_shutdown(link: Option<&mut MqttLink>, node: &aether_proto::Node) -> Instant {
     if let Some(link) = link {
-        if let Some(id) = link.publish(
-            &Topics::status(node),
-            QoS::AtLeastOnce,
-            true,
-            aether_proto::LWT_PAYLOAD.as_bytes(),
-        ) {
+        if let Some(id) = link.publish(Publication {
+            topic: &Topics::status(node),
+            qos: QoS::AtLeastOnce,
+            retain: true,
+            value: aether_proto::LWT_PAYLOAD.as_bytes(),
+        }) {
             // If an unusually fast PUBACK preceded registration, the 2 s bound still reboots.
             link.wait_for_puback(id);
         }
@@ -433,13 +489,21 @@ fn begin_shutdown(link: Option<&mut MqttLink>, node: &aether_proto::Node) -> Ins
     Instant::now()
 }
 
-fn apply_plan(
-    plan: &mut commands::Plan,
-    store: &Store,
-    cfg: &mut aether_proto::Config,
-    bridge: &mut Box<Bridge>,
-    power: &mut PowerStatus,
-) {
+struct ApplyPlan<'a> {
+    plan: &'a mut commands::Plan,
+    store: &'a Store,
+    cfg: &'a mut aether_proto::Config,
+    bridge: &'a mut Box<Bridge>,
+    power: &'a mut PowerStatus,
+}
+fn apply_plan(context: ApplyPlan<'_>) {
+    let ApplyPlan {
+        plan,
+        store,
+        cfg,
+        bridge,
+        power,
+    } = context;
     match plan.effect {
         Effect::Config => {
             let candidate = plan.config.take().expect("cfg plan contains candidate");
@@ -449,6 +513,7 @@ fn apply_plan(
                         *bridge = Box::new(Bridge::new(core, bridge.seq()));
                         bridge.set_power(*power);
                         *cfg = candidate;
+                        log::info!("cfg_change_applied");
                     } else {
                         commands::fail(&mut plan.result, "storage_error");
                     }
@@ -466,6 +531,7 @@ fn apply_plan(
             bridge.set_power(*power);
         }
         Effect::Reset => {
+            log::info!("reset_requested");
             if store
                 .save_config(plan.config.as_ref().expect("reset candidate"))
                 .is_err()
@@ -473,6 +539,7 @@ fn apply_plan(
                 commands::fail(&mut plan.result, "storage_error");
             }
         }
-        Effect::None | Effect::Restart => {}
+        Effect::Restart => log::info!("restart_requested"),
+        Effect::None => {}
     }
 }
