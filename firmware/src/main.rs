@@ -1,4 +1,5 @@
-//! Phase-2 executor: provisioning and MQTT, deliberately no GPIO/bus driver.
+//! Network/config owner; the dedicated CEC task owns the physical bus.
+mod cec;
 mod config;
 mod console;
 mod events;
@@ -15,7 +16,7 @@ use aether_logic::{
     status::{self, Snapshot},
 };
 use aether_proto::Topics;
-use cec_core::bridge::{Bridge, PowerStatus};
+use cec_core::bridge::PowerStatus;
 use config::{Result, Store};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop, hal::peripherals::Peripherals, mqtt::client::QoS,
@@ -80,8 +81,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     let mut cfg = store.load_config()?;
     let mut secrets = secrets::Secrets::load(&store)?;
     let node = cfg.node.clone(); // MQTT identity changes only on restart.
-    let mut bridge = Box::new(Bridge::new(aether_logic::config::core_config(&cfg)?, 0));
-    let mut power = PowerStatus::On;
+    let bus = cec::Link::new(&cfg)?;
     let peripherals = Peripherals::take()?;
     let mut net = net::Net::new(
         peripherals.modem,
@@ -102,7 +102,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         link.hub = hub.clone();
     }
     let ip = net.ip();
-    let initial_status = status::online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
+    let initial_status = bus.online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
     let http = http::Http::new(http::Init {
         token: &secrets.token,
         cfg: &cfg,
@@ -116,6 +116,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     let mut snapshot_at = Instant::now();
     let mut hint_at = Instant::now() - Duration::from_secs(30);
     let mut shutdown: Option<Instant> = None;
+    let mut observed_bus = (None, None);
     loop {
         net.poll();
         if (secrets.wifi.is_none() || secrets.mqtt.is_none())
@@ -218,7 +219,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     topic: &Topics::status(&node),
                     qos: QoS::AtLeastOnce,
                     retain: true,
-                    value: &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
+                    value: &bus.online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
                 });
                 if let Some(id) = published {
                     link.watch_status(id);
@@ -249,7 +250,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     topic: &Topics::status(&node),
                     qos: QoS::AtLeastOnce,
                     retain: true,
-                    value: &status::online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
+                    value: &bus.online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
                 }) {
                     link.watch_status(id);
                 }
@@ -257,6 +258,9 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
             }
             // Bound each turn so console/reconnect/telemetry are never starved.
             for _ in 0..32 {
+                if !bus.ready() {
+                    break;
+                }
                 let Ok(mqtt::Message { topic, data }) = link.events.try_recv() else {
                     break;
                 };
@@ -264,13 +268,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     continue;
                 }
                 if topic == Topics::tx(&node).as_str() {
-                    let event = aether_logic::bus::reject(&mut bridge, &data, ffi::now_us());
-                    link.json(Publication {
-                        topic: &Topics::bus(&node),
-                        qos: QoS::AtLeastOnce,
-                        retain: false,
-                        value: &event,
-                    });
+                    bus.command(cec::Command::Submit(data));
                 } else if let Some(verb) = topic
                     .strip_prefix(&format!("aether/{node}/cmd/"))
                     .and_then(commands::verb)
@@ -280,8 +278,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                         plan: &mut plan,
                         store: &store,
                         cfg: &mut cfg,
-                        bridge: &mut bridge,
-                        power: &mut power,
+                        bus: &bus,
                     });
                     if plan.result.ok && matches!(plan.effect, Effect::Config) {
                         telemetry_at = Instant::now();
@@ -303,7 +300,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     }
                 }
             }
-            link.report_overrun(&node, &mut bridge);
+            link.report_overrun(&bus);
             if shutdown.is_none()
                 && link.connected()
                 && cfg.telemetry_s != 0
@@ -314,9 +311,38 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     topic: &Topics::telemetry(&node),
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    value: &status::telemetry(&snapshot(&store, &net, Some(link), &ip)),
+                    value: &bus.telemetry(snapshot(&store, &net, Some(link), &ip)),
                 });
                 telemetry_at = Instant::now();
+            }
+        }
+        // Preserve bus seq order; network and SSE publication never run on core 1.
+        for event in bus.events.try_iter().take(128) {
+            let bytes = serde_json::to_vec(&event)?;
+            if let Some(link) = mqtt.as_mut() {
+                link.bus_event(&node, &bytes);
+            } else {
+                hub.publish("bus", &bytes);
+            }
+        }
+        let measured = {
+            let snapshot = bus.snapshot.lock().unwrap();
+            (snapshot.la, snapshot.state)
+        };
+        if measured != observed_bus {
+            observed_bus = measured;
+            let ip = net.ip();
+            let online = bus.online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
+            http.snapshot(&online, &cfg);
+            if let Some(link) = mqtt.as_mut() {
+                link.json(Publication {
+                    topic: &Topics::status(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: true,
+                    value: &online,
+                });
+            } else {
+                hub.publish("status", &serde_json::to_vec(&online)?);
             }
         }
         if let Some(link) = mqtt.as_mut() {
@@ -335,6 +361,9 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         // Both HTTP and MQTT execute on this owner, preserving command ordering
         // and persistence-before-acknowledgement semantics.
         for _ in 0..4 {
+            if !bus.ready() {
+                break;
+            }
             let Ok(operation) = http.operations.try_recv() else {
                 break;
             };
@@ -350,8 +379,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     plan: &mut plan,
                     store: &store,
                     cfg: &mut cfg,
-                    bridge: &mut bridge,
-                    power: &mut power,
+                    bus: &bus,
                 });
                 if plan.result.ok && matches!(plan.effect, Effect::Config) {
                     telemetry_at = Instant::now();
@@ -388,18 +416,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 };
                 (code, serde_json::to_vec(&plan.result)?)
             } else {
-                let event = aether_logic::bus::reject(&mut bridge, &operation.data, ffi::now_us());
-                let bytes = serde_json::to_vec(&event)?;
-                if let Some(link) = mqtt.as_mut() {
-                    link.publish(Publication {
-                        topic: &Topics::bus(&node),
-                        qos: QoS::AtLeastOnce,
-                        retain: false,
-                        value: &bytes,
-                    });
-                } else {
-                    hub.publish("bus", &bytes);
-                }
+                bus.command(cec::Command::Submit(operation.data));
                 (202, b"{}".to_vec())
             };
             // Main's shutdown deadline survives a disconnected or timed-out waiter.
@@ -421,7 +438,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         if snapshot_at.elapsed() >= Duration::from_secs(1) {
             let ip = net.ip();
             let snap = snapshot(&store, &net, mqtt.as_ref(), &ip);
-            http.snapshot(&status::online(&cfg, &snap), &cfg);
+            http.snapshot(&bus.online(&cfg, &snap), &cfg);
             snapshot_at = Instant::now();
         }
         if http
@@ -430,8 +447,8 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
             .lock()
             .unwrap()
             .is_some_and(|at| at.elapsed() >= Duration::from_millis(500))
+            && bus.idle()
         {
-            // Phase 2 has no physical transmitter; phase 3 must also gate this on TX idle.
             ffi::restart();
         }
         if shutdown.is_some_and(|since| {
@@ -462,6 +479,7 @@ fn snapshot<'a>(
         heap_free,
         heap_min,
         outbox_dropped: link.map_or(0, MqttLink::drops),
+        bus: status::BusSnapshot::default(),
     }
 }
 fn report(result: Result<()>) {
@@ -493,25 +511,27 @@ struct ApplyPlan<'a> {
     plan: &'a mut commands::Plan,
     store: &'a Store,
     cfg: &'a mut aether_proto::Config,
-    bridge: &'a mut Box<Bridge>,
-    power: &'a mut PowerStatus,
+    bus: &'a cec::Link,
 }
 fn apply_plan(context: ApplyPlan<'_>) {
     let ApplyPlan {
         plan,
         store,
         cfg,
-        bridge,
-        power,
+        bus,
     } = context;
     match plan.effect {
         Effect::Config => {
             let candidate = plan.config.take().expect("cfg plan contains candidate");
             match aether_logic::config::core_config(&candidate) {
                 Ok(core) => {
-                    if store.save_config(&candidate).is_ok() {
-                        *bridge = Box::new(Bridge::new(core, bridge.seq()));
-                        bridge.set_power(*power);
+                    if !bus.ready() {
+                        commands::fail(&mut plan.result, "busy");
+                    } else if store.save_config(&candidate).is_ok() {
+                        bus.command(cec::Command::Config {
+                            core,
+                            listener: candidate.ack.is_empty(),
+                        });
                         *cfg = candidate;
                         log::info!("cfg_change_applied");
                     } else {
@@ -522,13 +542,13 @@ fn apply_plan(context: ApplyPlan<'_>) {
             }
         }
         Effect::Power(state) => {
-            *power = match state {
+            let power = match state {
                 aether_proto::PowerStatus::On => PowerStatus::On,
                 aether_proto::PowerStatus::Standby => PowerStatus::Standby,
                 aether_proto::PowerStatus::ToOn => PowerStatus::ToOn,
                 aether_proto::PowerStatus::ToStandby => PowerStatus::ToStandby,
             };
-            bridge.set_power(*power);
+            bus.command(cec::Command::Power(power));
         }
         Effect::Reset => {
             log::info!("reset_requested");

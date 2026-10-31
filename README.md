@@ -3,17 +3,17 @@
 Rust firmware for an ESP32 HDMI-CEC bridge ("aether") that exposes the CEC bus
 over a native MQTT protocol, plus the host-testable crates it is built from.
 
-Status: pre-alpha. The host-tested CEC core, phase-2 ESP32 firmware executor
-and phase-2b HTTP API/web UI/push OTA are implemented against
-[`docs/protocol.md`](docs/protocol.md). The CEC GPIO/RMT driver is not implemented;
-HTTP/OTA hardware operation still requires bench verification.
+Status: pre-alpha. The host-tested CEC core, ESP32 GPIO/RMT bus executor
+and HTTP API/web UI/push OTA are implemented against
+[`docs/protocol.md`](docs/protocol.md). Phase 3 needs hardware timing and
+listener-first bench verification before enabling follower ACK/local replies.
 
 | Crate | Purpose |
 |---|---|
 | `crates/cec-core` | `no_std` CEC codec, transmit state machine, bridge policy |
 | `crates/aether-proto` | serde types for the MQTT protocol, shared with hosts |
 | `crates/aether-logic` | host-tested firmware config, console, commands and JSON |
-| `firmware/` | esp-idf application for the ESP32 (phase 2) |
+| `firmware/` | esp-idf application and core-1 GPIO/RMT CEC executor (phase 3) |
 
 Hardware target: ESP32-WROOM-32 DevKit, CEC on one open-drain GPIO with pull-up,
 HDMI pin 13 → GPIO, pin 17 → GND. Nothing else is connected.
@@ -111,16 +111,16 @@ console-only `show` / `factory-reset` / `reboot` loop.
 `factory-reset` erases all default NVS (cfg, node, secrets, boot), then reboots;
 MQTT `reset` restores default CEC cfg but preserves node, secrets and boot.
 
-Phase 2 publishes online status with `la:null`, `bus:null` (unmeasured),
-`hpd:null`, retained configuration, and real heap/RSSI/link/outbox telemetry.
-Deferred bus counters stay zero; queue.max is the capacity, 16.
-Valid `tx` requests receive an ordered `rejected/no_la` event, never a fabricated send.
+Phase 3 publishes measured bus health, effective LA, retained configuration and
+real CEC/heap/RSSI/link/outbox telemetry. Queue.max is capacity 16; depth excludes
+the active host request. MQTT and HTTP TX are validated on the bus task and finish
+as ordered asynchronous bus events; queue saturation is busy, invalid requests
+are rejected. Config/state changes are handed off without blocking main.
 `ping`, `state`, config, restart and reset work; MQTT `cmd/ota` is not supported.
-`cfg.log` is persisted but inert: no MQTT `log` topic is produced yet.
-`pa:"edid"` returns `edid_unsupported` because the GPIO contract has no DDC pins.
-No GPIO is driven in this phase, including configured HPD. Ingress is bounded
-to 32 events and 2048-byte MQTT payloads; overflow is reported as a bus overrun,
-and oversized command/tx payloads receive a malformed rejection.
+`cfg.log` is persisted but inert. HPD remains null; `pa:"edid"` returns
+`edid_unsupported` because the GPIO contract has no DDC pins. MQTT ingress remains
+bounded to 32 messages / 2048 bytes; the bus task uses bounded command/event queues
+and reports ring/event/outbox loss through ordered overrun errors.
 
 ## HTTP API, token and push OTA
 
@@ -163,7 +163,7 @@ curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' 
 curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"id":"h-state","power":"standby"}' "$BASE/api/cmd/state"
 curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"id":"h-tx","to":8,"data":"8F"}' "$BASE/api/tx"  # 202; phase 2 no_la on bus
+  -d '{"id":"h-tx","to":8,"data":"8F"}' "$BASE/api/tx"  # 202; asynchronous bus outcome
 curl -N -H "Authorization: Bearer $TOKEN" "$BASE/api/events"  # separate terminal
 curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE/api/log"
 curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -171,6 +171,66 @@ curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' 
 curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"id":"h-reset","confirm":"bench"}' "$BASE/api/cmd/reset"
 ```
+
+### Phase-3 listener-first bench gate
+
+Do not run two TV bridges on the same CEC bus. The operator first applies
+`{"id":"listen","la":0,"replies":[],"ack":[]}` before OTA; these persisted settings
+survive the image change. Fixed LA0 does not allocation-poll, and the empty ACK set
+disables even the core's implicit own-address ACK entry. No unsolicited line
+drive is permitted in this state; explicit host TX still works.
+
+These are operator checks, **not executed hardware results**:
+
+```sh
+# Supply broker TLS/auth privately using your normal mosquitto client config.
+mosquitto_sub -v -t 'aether/bench/status' -t 'aether/bench/bus' \
+  -t 'aether/bench/telemetry'
+curl -fsS -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"listen","la":0,"replies":[],"ack":[],"telemetry_s":10}' "$BASE/api/cfg"
+curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE/api/status"
+curl -N -H "Authorization: Bearer $TOKEN" "$BASE/api/events"
+# Only after the passive capture/timing gate, enable follower/local responses:
+curl -fsS -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"enable","ack":[0],"replies":["83","8C","8F","9F","46","91"]}' "$BASE/api/cfg"
+curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"power-on","power":"on"}' "$BASE/api/cmd/state"
+mosquitto_pub -t 'aether/bench/tx' -m '{"id":"denon-pwr","to":5,"data":"8F"}'
+curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"http-pwr","to":5,"data":"8F"}' "$BASE/api/tx"
+# End the exercise by restoring persisted passive listener mode:
+curl -fsS -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"listen-again","la":0,"ack":[],"replies":[]}' "$BASE/api/cfg"
+curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE/api/cfg"
+```
+
+Listener capture should show receiver broadcasts such as `5→15 84200005`
+and Apple TV `4→0 8F` (possibly NACK-truncated while ACK is disabled), with
+monotonic sequence and start timestamps and no local TX. Status becomes `bus:ok`
+after a valid frame or one second of high idle; boot low with no edges for
+over 100 ms is `no_pullup`, later sustained low/recovery is `stuck_low`/`ok`.
+After enable, `4→0 8F` must be ACKed and answered with local `0→4 9000`;
+the Denon request must yield `0→5 8F` echo, `tx` with the matching id and
+`status:ack`, and receiver `5→0 90xx` (receiver response order may precede
+or follow the TX result, but the send's RX echo must precede its TX result).
+No reply may be generated for `85`, `82`, broadcasts or LA15 initiators.
+After the final return-to-listener request, confirm effective cfg has fixed LA0,
+`ack:[]` and `replies:[]`; let accepted host sends drain and stop submitting TX.
+Observe addressed traffic with no local TX and no increase in
+`telemetry.rx.acked_by_us`. Confirm on the scope that the bridge never pulls the
+line low (including after reboot); valid incoming frames alone do not prove passivity.
+
+With a logic analyzer, measure actual ACK-fall-to-assert below 200 us and ACK
+hold near 1500 us, RMT data/start widths, seamless block chaining, per-block
+first-fall origin acquisition within 300 us, and sample jitter within the core's
+200-us allowance under Wi-Fi/SSE/HTTP/OTA load. On arbitration loss/collision,
+verify GPIO matrix detachment releases in under 1 us and the detached RMT tail
+never reaches the wire or replays during a retry. Check busy-bus start rejection.
+Also check bus/console stack headroom, open-drain high=released electrically,
+maximum frame lengths, NACK retry/poll behavior, arbitration recovery, config
+barriers and automatic LA allocation separately. OTA must wait for TX/follower
+ACK idle before reboot. Software build/tests alone do not establish any of these.
+
 
 Create an **app-only** image (no bootloader/table/offset padding) with:
 

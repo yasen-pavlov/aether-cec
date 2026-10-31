@@ -279,6 +279,10 @@ impl Bridge {
         self.seq = self.seq.wrapping_add(1);
         self.seq
     }
+    /// Host requests waiting to be transmitted (capacity 16).
+    pub fn queue_depth(&self) -> usize {
+        self.host.len()
+    }
     /// Validates and queues a host frame. Length bounds are enforced by its types.
     pub fn submit(&mut self, s: Submission, _now_us: u64) -> Result<(), SubmitError> {
         if s.frame.to > BROADCAST {

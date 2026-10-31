@@ -1,6 +1,9 @@
 //! The only firmware module permitted to call unsafe ESP-IDF APIs.
 use esp_idf_svc::sys;
 
+#[path = "cec/hardware.rs"]
+pub mod cec;
+
 // Override IDF's generic descriptor with Cargo package name `aether`, allowing
 // push uploads to enforce the same-project check before activating a slot.
 esp_idf_svc::sys::esp_app_desc!();

@@ -141,6 +141,10 @@ impl Tx {
     /// as a line error once `timing::SAMPLE_SLACK` passes (observed in the lead's smoke
     /// run: an executor that sampled immediately on `SampleAt` aborted five times).
     pub fn line_sample(&mut self, level: Level, now_us: u64);
+    /// Re-anchor the current block's sample/chaining clock to its observed first
+    /// falling edge; also updates the final-attempt start for the header block.
+    /// Call before delivering any sample. No-op outside Sample/AwaitSample.
+    pub fn block_started(&mut self, start_us: u64);
     /// Executor detected a level it did not drive mid-block (collision). Aborts the attempt.
     pub fn line_error(&mut self, now_us: u64);
     pub fn in_progress(&self) -> bool;
@@ -208,6 +212,7 @@ impl Bridge {
     pub fn next_request(&mut self) -> Option<TxRequest>;
     pub fn seq(&self) -> u32;
     pub fn next_seq(&mut self) -> u32; // also for executor-owned events
+    pub fn queue_depth(&self) -> usize;  // waiting host requests, for telemetry
 }
 ```
 
@@ -309,16 +314,17 @@ neither `serde_json` nor serde's `alloc` feature.
 
 `firmware/` is a standalone ESP-IDF package, excluded from host workspace checks.
 `crates/aether-logic` is a plain-std workspace member containing configuration
-merge/validation, bounded quoted-console parsing, command plans, phase-2 TX
-rejections, bounded MQTT fragment reassembly and status/telemetry construction.
+merge/validation, bounded quoted-console parsing, command plans, validated TX
+submission, bounded MQTT reassembly, CEC executor primitives and runtime snapshots.
 Protocol structs remain the one
 wire definition. `CommandResult.id` is now optional and omitted for malformed
 commands; valid commands always echo their ID. `pa:edid` is rejected as
 `edid_unsupported` until the configuration contract includes DDC pins.
 
-The main ESP task (32768-byte stack) owns NVS, effective Config, runtime power,
-the single heap-boxed `cec_core::bridge::Bridge`, Wi-Fi and the `EspMqttClient`
-handle. It polls Wi-Fi reconnection every five seconds after a disconnect and
+The main ESP task (32768-byte stack) owns NVS, effective wire Config,
+Wi-Fi and the `EspMqttClient` handle. The core-1 bus task owns runtime power
+and the single boxed `cec_core::bridge::Bridge`. Main polls Wi-Fi reconnection
+every five seconds after a disconnect and
 runs MQTT and HTTP command effects serially through the same `apply_plan`. SDK defaults are resolved via the absolute
 Cargo-relative `ESP_IDF_SDKCONFIG_DEFAULTS`; firmware builds stay in-tree.
 There is no SNTP client: certificate chain/hostname validation is enabled but
@@ -356,7 +362,7 @@ not lossy channel events. Fragmented payloads are bounded to 2048 bytes;
 oversized input is delivered as malformed. Full ingress increments an atomic
 overrun count. Publication uses nonblocking enqueue, dropping newest on failure;
 failed enqueues and expired entries count toward telemetry. After enqueue recovers,
-main emits one accumulated overrun error with sequence from Bridge::next_seq().
+main requests an accumulated overrun event from the bus owner's `Bridge::next_seq()`.
 Deleted-message callbacks are enabled; failed subscriptions force a disconnect
 and esp-mqtt auto-reconnect, ensuring subscriptions are retried.
 The callback never logs topics, payloads or credentials.
@@ -369,6 +375,10 @@ the effective value is replaced or acknowledged. Node/topics and GPIO wiring
 take effect only after restart. Power is in-memory only and survives cfg changes.
 The MQTT log topic is intentionally absent; cfg.log is stored but inert.
 
+Bus events observed while MQTT is disconnected are still sent to SSE, counted as
+dropped and summarized after reconnect; they are not queued ahead of retained
+status/config on a new connection.
+
 The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
 0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at
 0x20000 and 0x200000. Remaining 0x20000 bytes are an unused `storage` NVS
@@ -380,15 +390,102 @@ initialization; there is no provisioning-confirmation path.
 Cargo's `ESP_IDF_GLOB_AETHER_*` settings stage and track `partitions.csv` in the
 generated esp-idf-sys project, where IDF resolves the custom CSV filename.
 
-Phase 3 replaces `aether_logic::bus::reject` with the executor handoff:
-the existing Bridge owns all sequence allocation and power, including stub
-rejections/overruns now. A dedicated high-priority bus task will own GPIO4,
-the edge ISR ring, Decoder, TX RMT and sample timer, draining timestamped edges
-and timeouts before completions as §1 requires. Network publication remains in
-the main owner through a bounded event queue, never in an ISR. Phase 2 performs
-no pin configuration, allocation polls, physical sends or HPD sampling; status
-therefore has `la:null`, `bus:null`, `hpd:null`; deferred bus counters stay zero,
-while queue.max reports the request capacity (16), not an observed high-water mark.
+### CEC bus executor (phase 3)
+
+`firmware/src/cec/mod.rs` owns Decoder, Tx, boxed Bridge and all bus policy in
+`cec-bus`: 12288-byte stack, priority 22, pinned to core 1. Its unsafe hardware
+boundary is `firmware/src/cec/hardware.rs`, imported under `ffi::cec`.
+Main sends bounded FIFO commands (64 slots) and receives ordered proto events
+(128 slots), never waits for bus completion, and leaves MQTT/SSE on main.
+Main backpressures MQTT/HTTP consumption when the command mailbox is full.
+Receive edges and timeouts are drained before every TX action and completion.
+A 1-ms notification timeout polls Decoder at least 200 Hz; edge/sample ISRs wake
+the task immediately. Read-only counters/status use a short snapshot mutex:
+the bus owner only `try_lock`s, so network work cannot block CEC.
+
+GPIO is input/output open-drain with no internal pull resistors; external sink
+pull-up is required. The GPIO ISR service is installed from core 1, IRAM,
+level 3, both edges. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
+and release/acquire indices, preserving full 64-bit ESP timer timestamps.
+Drop-newest edge overruns increment telemetry `rx.errors` and reset decoding;
+they are not counted as lost bus events. Event-channel/outbox losses accumulate
+separately as `err kind:overrun dropped:N`. Retrying that report neither adds a
+loss nor consumes a sequence; its next sequence is committed only after enqueue.
+The IRAM ISR and ISR-dispatched sample/ACK-release timers perform no allocation,
+logging, serialization or network calls. Timer interrupts are pinned to core 1.
+IDF 5.4.2 requires `ESP_TIMER_SHOW_EXPERIMENTAL` to make the CPU1 affinity
+choices effective; generated bindings were checked for both CPU1 choices.
+The release also enables `RMT_ISR_IRAM_SAFE` and GPIO control in IRAM.
+
+On EOM rise Decoder emits AckDue; the task arms a predicted-time window. The
+actual following falling-edge ISR asserts GPIO low immediately, then starts an
+ISR-dispatched one-shot to release after `timing::ACK_LOW` (1500 us).
+The prediction only guards the valid next-bit period; it never triggers the
+pull-down. The first falling edge consumes the arm even outside the window,
+and the window compares the complete 64-bit timestamp, not its wrapping low word.
+Expected falling-edge-to-assert latency is several to tens of us,
+with a required bench maximum below 200 us under Wi-Fi/HTTP/OTA load.
+These are design expectations, **not measurements**. The EOM-rise-to-arm path
+must also complete before the shortest remaining high interval (nominal 900 us).
+Oscilloscope/logic-analyzer measurements are a required release gate.
+
+RMT TX runs at 1 MHz with 64 memory symbols and queue depth 4. A host-tested
+allocation-free renderer emits optional start, eight MSB-first bits, EOM and
+initiator ACK including trailing high. Four owned symbol buffers outlive queued
+transactions. Every block calls task-context `rmt_transmit` directly; there is no
+start timer. Immediately before launch require a High pin and an empty edge ring.
+Chained blocks must queue strictly before `block_start_us - 100 us`, otherwise
+the executor reports a line error rather than launching a late block.
+Each block's first falling edge is timestamped by the GPIO ISR and re-anchors
+`Schedule` and `Tx::block_started`, including chaining and the final-attempt start.
+The scheduled origin is only a fallback deadline: if no matching falling edge
+is seen within 300 us, fail as a line error, never sample from the prediction.
+ISR sample timers use that block's physical origin plus the core offset and
+retain actual sample timestamps; missed/late samples fail through Tx.
+Driven zero read high or a decoder error on our own transmitting echo is a line
+error; initiator ones read low are arbitration losses classified by Tx.
+ACK polarity remains target-dependent.
+
+RMT's matrix output is saved from its allocated channel, not hardcoded to channel
+0. During follower operation the matrix is switched to the released GPIO latch
+so GPIO ACK writes actually control the pad; during transmit RMT owns the
+open-drain output (high releases, never sources). Abort sets the GPIO latch high
+and immediately routes the pad to that latch; RMT keeps running detached.
+Never call `rmt_disable`, or re-enable RMT after initialization, on classic ESP32:
+IDF 5.4.2's synchronous stop path may keep driving or spin with interrupts masked.
+An IRAM `on_trans_done` atomic in-flight counter and nonblocking
+`rmt_tx_wait_all_done(ch, 0)` gate re-routing; detached queued work must finish
+before another send can own the pad. Enabled RMT resources/context remain
+retained even on initialization failure, rather than invoking that unsafe stop.
+Normal completion simply unroutes once the driver reports done, without abort.
+Done clears the waveform deadline and never releases an unrelated follower ACK,
+including a Busy result with no initiator waveform.
+
+IDF initializes a newly allocated RMT channel's idle level low. Startup therefore
+holds the already-released open-drain pad while priming RMT with an all-high
+symbol and high end level, then switches to the GPIO latch before releasing hold.
+The priming transaction never reaches the CEC wire, including in listener mode.
+
+Both MQTT and HTTP TX enter the same validated `bus::submit` path on the owner.
+Queue-full returns busy; other errors preserve correlated rejected fields.
+Host queue depth comes from `Bridge::queue_depth`, max remains capacity 16.
+Counters report actual frames/errors, frames ACKed by us, host requests, local
+completions, outcomes and extra attempts. Config commands are FIFO barriers:
+drain accepted host requests before rebuilding Bridge with its current sequence,
+preserve power, and do not let later submissions overtake the change. Pending
+old-identity local replies may be dropped on that rebuild. Wire cfg persistence
+and command acknowledgement remain on main; actual bus application is asynchronous.
+Fixed LA never allocates; auto LA uses core polls and updates status/line.la.
+An empty wire `ack` explicitly masks the core's implicit own-LA ACK entry to an
+empty Decoder set, including after allocation. With fixed LA, replies=[] and
+ack=[] there are no unsolicited line drives; explicit host TX remains allowed.
+
+Bus health starts unknown, becomes ok on a valid frame or one second of high
+idle, reports boot low with no edges after 100 ms as no_pullup, and reports later
+sustained low/recovery as stuck_low/ok. Main republishes retained status on
+health/LA changes. HPD stays null; EDID and the MQTT log topic remain deferred.
+OTA's post-response reboot additionally requires no pending bus commands,
+queued host requests, active waveform or follower ACK.
 
 ### HTTP ownership, SSE and log capture (phase 2b)
 
@@ -405,7 +502,7 @@ functional there.
 Normal JSON HTTP bodies are bounded to 2048 bytes. A four-entry command mailbox
 hands operations to main, which calls `commands::plan` and the same executor
 `apply_plan` as MQTT. Config is persisted before cfg publication and response;
-TX uses the same phase-2 ordered `no_la` rejection as MQTT, returning HTTP 202.
+TX uses the same asynchronous validated bus-task submission as MQTT, returning HTTP 202.
 Read-only snapshots are copied from main at most once per second, never by
 sharing the mutable Bridge.
 HTTP replies use proto structs; failures map through the pure error-status policy.
@@ -463,8 +560,7 @@ without activating its slot. The Rust app descriptor explicitly names `aether`;
 The pending `{id,slot}` record is persisted in NVS namespace `ota` before selecting
 the partition, so a power cut never produces an untracked update. A failed
 complete clears that record. After full verification the handler sends 202
-`OtaAccepted`; main reboots at least 500 ms later. Phase 2 has no physical TX;
-phase 3 must additionally gate this reboot on transmitter idle.
+`OtaAccepted`; main reboots at least 500 ms later and only after the bus is idle.
 
 `Health::new()` queries `esp_ota_get_state_partition(esp_ota_get_running_partition())`
 before anything fallible. Only PENDING_VERIFY sets `BootKind::Pending`; the NVS

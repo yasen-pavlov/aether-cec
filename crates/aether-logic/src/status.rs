@@ -3,6 +3,48 @@ use aether_proto::{
     Config, PhysicalAddressConfig, QueueCounters, RxCounters, Status, Telemetry, TxCounters,
 };
 
+/// Latest observations copied out of the dedicated bus task.
+#[derive(Clone)]
+pub struct BusSnapshot {
+    /// Effective address, including automatic allocation.
+    pub la: Option<u8>,
+    /// Measured electrical health.
+    pub state: Option<aether_proto::BusState>,
+    /// Receiver counters.
+    pub rx: RxCounters,
+    /// Transmitter counters.
+    pub tx: TxCounters,
+    /// Queued host requests (excludes the active transmitter).
+    pub depth: u8,
+    /// No waveform or queued request remains.
+    pub idle: bool,
+}
+impl Default for BusSnapshot {
+    fn default() -> Self {
+        Self {
+            la: None,
+            state: None,
+            depth: 0,
+            idle: true,
+            rx: RxCounters {
+                frames: 0,
+                errors: 0,
+                acked_by_us: 0,
+            },
+            tx: TxCounters {
+                host: 0,
+                local: 0,
+                ack: 0,
+                nack: 0,
+                arb_lost: 0,
+                line_error: 0,
+                busy: 0,
+                rejected: 0,
+                retransmits: 0,
+            },
+        }
+    }
+}
 /// Actual runtime observations, sampled by the executor.
 pub struct Snapshot<'a> {
     /// Firmware version and short SHA.
@@ -23,6 +65,8 @@ pub struct Snapshot<'a> {
     pub heap_min: u32,
     /// Failed outbound publications.
     pub outbox_dropped: u64,
+    /// CEC observations, never read from GPIO on the network task.
+    pub bus: BusSnapshot,
 }
 
 /// All and only the online status fields from protocol §3.
@@ -36,7 +80,7 @@ pub fn online(cfg: &Config, snapshot: &Snapshot<'_>) -> Status {
         fw: Some(snapshot.fw.try_into().expect("firmware version <=24 bytes")),
         boot: Some(snapshot.boot),
         t_us: Some(snapshot.t_us),
-        la: None,
+        la: snapshot.bus.la,
         pa: match cfg.pa {
             PhysicalAddressConfig::Fixed(pa) => Some(pa),
             PhysicalAddressConfig::Edid => None,
@@ -44,12 +88,12 @@ pub fn online(cfg: &Config, snapshot: &Snapshot<'_>) -> Status {
         device_type: Some(cfg.device_type),
         ip: Some(snapshot.ip.try_into().expect("IP <=45 bytes")),
         rssi: Some(snapshot.rssi),
-        bus: None,
+        bus: snapshot.bus.state,
         hpd: None,
     }
 }
 
-/// No bus counters move until phase 3 installs an executor; health is real now.
+/// Runtime counters sampled without sharing the mutable policy engine.
 pub fn telemetry(snapshot: &Snapshot<'_>) -> Telemetry {
     Telemetry {
         t_us: snapshot.t_us,
@@ -58,23 +102,12 @@ pub fn telemetry(snapshot: &Snapshot<'_>) -> Telemetry {
         link_count: snapshot.link_count,
         heap_free: snapshot.heap_free,
         heap_min: snapshot.heap_min,
-        rx: RxCounters {
-            frames: 0,
-            errors: 0,
-            acked_by_us: 0,
+        rx: snapshot.bus.rx.clone(),
+        tx: snapshot.bus.tx.clone(),
+        queue: QueueCounters {
+            depth: snapshot.bus.depth,
+            max: 16,
         },
-        tx: TxCounters {
-            host: 0,
-            local: 0,
-            ack: 0,
-            nack: 0,
-            arb_lost: 0,
-            line_error: 0,
-            busy: 0,
-            rejected: 0,
-            retransmits: 0,
-        },
-        queue: QueueCounters { depth: 0, max: 16 },
         outbox_dropped: snapshot.outbox_dropped,
     }
 }

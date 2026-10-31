@@ -502,3 +502,67 @@ fn tx_rechecks_undecodable_activity_and_drops_same_initiator_wait() {
         TxAction::SendBlock { .. }
     ));
 }
+
+#[test]
+fn tx_physical_block_origins_shift_samples_chaining_and_completion_timestamp() {
+    for reanchor_awaiting in [false, true] {
+        let mut tx = Tx::new();
+        tx.block_started(999_999); // Idle: no effect.
+        tx.start(
+            TxRequest {
+                frame: Frame::new(0, 4, &[0x8f]).unwrap(),
+                retries: 0,
+            },
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+        tx.block_started(999_999); // Free: no effect.
+        let scheduled = u64::from(timing::SIGNAL_FREE_NEW);
+        assert!(
+            matches!(tx.step(scheduled, 0), TxAction::SendBlock { block_start_us, .. } if block_start_us == scheduled)
+        );
+        let physical = scheduled + 280; // Deliberately exceeds SAMPLE_SLACK.
+        let mut pending = None;
+        if reanchor_awaiting {
+            let TxAction::SampleAt { at_us } = tx.step(scheduled, 0) else {
+                panic!("sample");
+            };
+            pending = Some(at_us);
+        }
+        tx.block_started(physical);
+        let mut now = physical;
+        for _ in 0..5 {
+            let at_us = pending.take().unwrap_or_else(|| {
+                let TxAction::SampleAt { at_us } = tx.step(now, 0) else {
+                    panic!("sample");
+                };
+                at_us
+            });
+            let due = physical + u64::from(at_us);
+            tx.line_sample(Level::Low, due - 1); // Still early after re-anchor.
+            assert!(matches!(tx.step(due - 1, 0), TxAction::Wait { until_us } if until_us == due));
+            now = due;
+            tx.line_sample(Level::Low, now);
+        }
+        let next = physical + u64::from(timing::START_TOTAL.nominal + 10 * timing::BIT);
+        assert!(
+            matches!(tx.step(now, 0), TxAction::SendBlock { block_start_us, start: false, .. } if block_start_us == next)
+        );
+        let physical_next = next + 250;
+        tx.block_started(physical_next);
+        let TxAction::SampleAt { at_us } = tx.step(next, 0) else {
+            panic!("sample");
+        };
+        now = physical_next + u64::from(at_us);
+        tx.line_sample(Level::Low, now);
+        let end = physical_next + u64::from(10 * timing::BIT);
+        tx.block_started(999_999); // BlockEnd: no effect.
+        assert_eq!(tx.step(now, 0), TxAction::Wait { until_us: end });
+        assert!(matches!(tx.step(end, 0), TxAction::Done {
+            outcome: TxOutcome { status: TxStatus::Ack, attempts: 1 },
+            final_attempt_start_us,
+        } if final_attempt_start_us == physical));
+    }
+}

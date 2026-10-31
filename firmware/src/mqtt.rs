@@ -212,6 +212,21 @@ impl MqttLink {
             }
         }
     }
+    pub fn bus_event(&mut self, node: &aether_proto::Node, bytes: &[u8]) {
+        if self.connected() {
+            self.publish(Publication {
+                topic: &Topics::bus(node),
+                qos: QoS::AtLeastOnce,
+                retain: false,
+                value: bytes,
+            });
+        } else {
+            // Do not enqueue pre-connection bus traffic ahead of status/cfg.
+            self.hub.publish("bus", bytes);
+            self.dropped = self.dropped.saturating_add(1);
+            self.pending_overrun = self.pending_overrun.saturating_add(1);
+        }
+    }
     pub fn json(&mut self, message: Publication<'_, impl serde::Serialize>) -> Option<u32> {
         let Publication {
             topic,
@@ -233,40 +248,19 @@ impl MqttLink {
             }
         }
     }
-    pub fn report_overrun(
-        &mut self,
-        node: &aether_proto::Node,
-        bridge: &mut cec_core::bridge::Bridge,
-    ) {
+    pub fn report_overrun(&mut self, bus: &crate::cec::Link) {
         let expired = self.expired.swap(0, Ordering::Relaxed);
         self.dropped = self.dropped.saturating_add(u64::from(expired));
         self.pending_overrun = self
             .pending_overrun
             .saturating_add(expired)
             .saturating_add(self.ingress_dropped.swap(0, Ordering::Relaxed));
-        if self.pending_overrun == 0 || !self.enqueue_recovered {
-            return;
-        }
-        let dropped = self.pending_overrun;
-        let event = aether_proto::BusEvent::Err {
-            seq: bridge.next_seq(),
-            t_us: crate::ffi::now_us(),
-            kind: aether_proto::ErrorKind::Overrun,
-            from: None,
-            to: None,
-            bits: None,
-            dropped: Some(dropped),
-        };
-        if self
-            .json(Publication {
-                topic: &Topics::bus(node),
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                value: &event,
-            })
-            .is_some()
+        if self.pending_overrun != 0
+            && self.enqueue_recovered
+            && bus.ready()
+            && bus.command(crate::cec::Command::Overrun(self.pending_overrun))
         {
-            self.pending_overrun -= dropped;
+            self.pending_overrun = 0;
         }
     }
     pub fn drops(&self) -> u64 {

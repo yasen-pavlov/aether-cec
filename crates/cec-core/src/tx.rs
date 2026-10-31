@@ -151,6 +151,16 @@ impl Tx {
             eom,
         }
     }
+    /// Re-anchor the current block to its first falling edge observed by the executor.
+    /// No-op outside Sample/AwaitSample; no sample may be delivered before this.
+    pub fn block_started(&mut self, start_us: u64) {
+        if matches!(self.state, State::Sample | State::AwaitSample) {
+            self.block_start = start_us;
+            if self.block == 0 {
+                self.final_attempt_start_us = start_us;
+            }
+        }
+    }
     fn fail(&mut self, status: TxStatus, now: u64) {
         let retries = self.request.as_ref().expect("active request").retries;
         if status == TxStatus::Nack {

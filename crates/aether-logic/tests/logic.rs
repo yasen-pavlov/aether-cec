@@ -184,7 +184,6 @@ fn command_results_and_effects() {
 fn tx_rejections_use_shared_sequence_and_preserve_fields() {
     let mut bridge = Bridge::new(config::core_config(&config::defaults()).unwrap(), 9);
     for (payload, reason, id) in [
-        (r#"{"id":"t","to":8,"data":"8F"}"#, "no_la", Some("t")),
         (r#"{"id":"t","to":16,"data":"8F"}"#, "bad_to", Some("t")),
         (
             r#"{"id":"t","to":8,"data":"ZZ"}"#,
@@ -211,7 +210,8 @@ fn tx_rejections_use_shared_sequence_and_preserve_fields() {
     ] {
         let seq = bridge.seq() + 1;
         let event =
-            serde_json::to_value(bus::reject(&mut bridge, payload.as_bytes(), 123)).unwrap();
+            serde_json::to_value(bus::submit(&mut bridge, payload.as_bytes(), 123).unwrap())
+                .unwrap();
         assert_eq!(event["status"], "rejected");
         assert_eq!(event["reason"], reason);
         assert_eq!(event["seq"], seq);
@@ -239,6 +239,7 @@ fn status_and_telemetry_exact_fields() {
         heap_free: 1000,
         heap_min: 900,
         outbox_dropped: 7,
+        bus: status::BusSnapshot::default(),
     };
     let online = serde_json::to_value(status::online(&cfg, &snapshot)).unwrap();
     assert_eq!(
@@ -255,7 +256,7 @@ fn status_and_telemetry_exact_fields() {
     assert_eq!(telemetry["rssi"], -58);
     assert_eq!(telemetry["queue"]["depth"], 0);
     assert_eq!(telemetry["queue"]["max"], 16);
-    // These bus measurements are explicitly deferred until the GPIO executor.
+    // An untouched runtime snapshot has no observations.
     assert_eq!(telemetry["rx"]["frames"], 0);
     assert_eq!(telemetry["rx"]["errors"], 0);
     assert_eq!(telemetry["rx"]["acked_by_us"], 0);
