@@ -5,7 +5,7 @@ Native MQTT contract between the Rust ESP32 HDMI-CEC bridge ("aether") and Chore
 (`tele/<t>/SENSOR` / `cmnd/<t>/HdmiSend` / `stat/<t>/RESULT` / `tele/<t>/LWT`), which stays
 available in Choregos as `bridge.kind = "tasmota"`.
 
-Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; push OTA over the HTTP API; serial-only credentials). Implemented: §2, §3, §6 (counters zero until phase 3), §7, §8, §10; in progress: §9 OTA, §11 HTTP API; deferred: §4/§5 bus, `log` topic.
+Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; push OTA over the HTTP API; serial-only credentials). Implemented: §2, §3, §6 (counters zero until phase 3), §7–§11; deferred: §4/§5 bus, `log` topic.
 
 ---
 
@@ -50,7 +50,7 @@ data-rise `1` [300, 900] / `0` [1 200, 1 800], next-fall [1 950, 2 850]. (X0:353
    by Choregos' JSONL trace tooling. No binary framing.
 4. **Bridge survives without the host.** Identity replies (physical address, vendor, OSD, version,
    power) are answered on-device so other CEC devices keep seeing a TV when Choregos is down.
-5. **Operable.** Retained status + LWT, periodic telemetry, remote config, pull-OTA with rollback.
+5. **Operable.** Retained status + LWT, periodic telemetry, remote config, push-OTA with rollback.
 
 Transport: MQTT over TLS (port 8883, server certificate verified against the ESP-IDF certificate
 bundle, user/password auth) is the default; plain 1883 is a console-selectable fallback for brokers
@@ -75,7 +75,7 @@ from the bridge carries no version field — the schema version is in `status.v`
 | `aether/<node>/tx` | H→B | 1 | no | §4 send request |
 | `aether/<node>/telemetry` | B→H | 0 | no | §6 periodic counters |
 | `aether/<node>/cfg` | B→H | 1 | yes | §7 effective config (republished after every change) |
-| `aether/<node>/cmd/<verb>` | H→B | 1 | no | §8 commands: `cfg`, `state`, `ping`, `restart`, `ota`, `reset` |
+| `aether/<node>/cmd/<verb>` | H→B | 1 | no | §8 commands: `cfg`, `state`, `ping`, `restart`, `reset` |
 | `aether/<node>/cmd/result` | B→H | 1 | no | §8 command outcome, echoes `id` and `verb` |
 | `aether/<node>/ota` | B→H | 1 | no | §9 OTA progress |
 | `aether/<node>/log` | B→H | 0 | no | §6 optional log lines (level from config, default off) |
@@ -378,9 +378,11 @@ Push model (decided 2026-10-31, replacing the earlier pull-by-URL draft): the br
 VLAN that may not reach any image host, while operators and CI on the LAN can always reach the
 bridge. An operator uploads the image to the bridge's HTTP API (§11, `POST /api/ota`); the bridge
 streams it into the inactive OTA partition, verifies SHA-256, reboots, and confirms the new image
-only after MQTT connects and `status` is published. A pending OTA that cannot publish `status`
-within 60 s is rolled back by the bootloader on the next reset. A non-OTA boot (first USB flash,
-provisioning without a broker) also confirms after 60 s so a fresh board never rollback-loops.
+only after MQTT connects and the retained online `status` receives PUBACK. The bootloader's running
+partition state, not the NVS record, determines whether an image is pending verification. An
+independent one-shot timer resets a still-pending image at 60 s, causing bootloader rollback even
+if main stalls or startup fails. Non-OTA/USB boots are already valid and need no application
+confirmation; the bootloader initializes blank otadata as VALID.
 
 Progress is published on MQTT `ota` and on the HTTP event stream:
 
@@ -393,11 +395,14 @@ Progress is published on MQTT `ota` and on the HTTP event stream:
 {"id":"o-1","state":"confirmed","fw":"0.2.0"}   // or "rolled_back" from the old one
 ```
 
-`id` (bridge-assigned, `o-<n>`) and the pending state survive the reboot in NVS so the confirmation
-can be attributed. Rules: `X-Sha256` header mandatory and checked before the slot is activated;
-image must be an esp-idf app image for the same project name; OTA is refused (`409`) while another
-OTA is in progress; a CEC `tx` in flight is allowed to finish before the reboot. There is no MQTT
-`cmd/ota`.
+`id` (bridge-assigned, `o-<n>`) and the target slot survive the reboot in NVS so confirmation
+can be attributed and the old image can report `rolled_back` when the recorded slot differs
+from its running slot. This record never decides whether the running image is pending.
+Rules: `X-Sha256` header mandatory and checked before the slot is activated; image must be an
+esp-idf app image for the same project name. OTA is refused (`409 busy`) while the running image
+is still pending verification or an accepted upload is awaiting reboot, before allocating a
+new id. Streaming concurrency is described in §11; a CEC `tx` in flight is allowed to finish
+before the reboot. There is no MQTT `cmd/ota`.
 
 ## 10. Provisioning (out of band — recorded here so the contract is complete)
 
@@ -416,8 +421,10 @@ every handler calls the same logic as the MQTT verb, so the web UI, Choregos, `c
 `mosquitto_pub` speak one dialect.
 
 Authentication: `Authorization: Bearer <token>` on every endpoint except `GET /`, static assets and
-`GET /healthz`. The token is 32 random bytes (hex) generated on first boot, stored with the other
-secrets, printed by console `show token`, replaced by `set token <hex>`. Missing/wrong token → `401`.
+`GET /healthz`. The token is 32 random bytes (hex), generated before Wi-Fi/ADC startup with the
+bootloader entropy source enabled and stored separately in NVS `secrets/token`; loading invalid
+credentials never overwrites the credentials blob. Console `show token` prints it;
+`set token <hex>` replaces only that key. Missing/wrong token → `401`.
 
 | Method | Path | Body / response |
 |---|---|---|
@@ -434,6 +441,12 @@ secrets, printed by console `show token`, replaced by `set token <hex>`. Missing
 
 HTTP errors use `{"ok":false,"reason":"…"}` with the §8 reason vocabulary plus `unauthorized`,
 `not_found`, `too_large`, `busy`. At most 4 concurrent connections; SSE clients count against that.
+The single httpd task streams uploads synchronously: a second upload while one is streaming waits
+in the accept backlog; `409` covers an accepted-but-not-yet-rebooted upload (and a running image
+still pending verification). Other requests, including `/healthz`, can also wait behind an upload.
+HTTP status snapshots refresh at most once per second. Restart/reset always retain main's
+two-second shutdown deadline, or reboot earlier on offline PUBACK; the HTTP response's 500-ms
+grace is only a speed-up, not a condition for reboot.
 The web UI shows status, the live bus log, the cfg form and the OTA upload; it never shows secrets.
 
 ## 12. Mapping onto Choregos (`bridge.kind = "aether"`)

@@ -301,17 +301,6 @@ pub struct ResetCommand {
     pub confirm: String<16>,
 }
 
-/// Pull-OTA request on `cmd/ota`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OtaRequest {
-    /// Correlation identifier persisted across reboot.
-    pub id: RequestId,
-    /// HTTPS image location (transport policy is validated by the executor).
-    pub url: String<160>,
-    /// Mandatory expected image SHA-256, as 64 hex characters.
-    pub sha256: String<64>,
-}
-
 /// Topic command verb; the verb is not duplicated inside request payloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -324,8 +313,6 @@ pub enum Verb {
     Ping,
     /// Clean restart.
     Restart,
-    /// Pull OTA.
-    Ota,
     /// Reset CEC settings.
     Reset,
 }
@@ -338,7 +325,6 @@ impl Verb {
             Self::State => "state",
             Self::Ping => "ping",
             Self::Restart => "restart",
-            Self::Ota => "ota",
             Self::Reset => "reset",
         }
     }
@@ -347,6 +333,10 @@ impl Verb {
 /// A command selected by the MQTT topic verb, not by inspecting its JSON keys.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire commands must remain no_std and allocation-free"
+)]
 pub enum Command {
     /// Atomic partial configuration change.
     Cfg(ConfigCommand),
@@ -356,8 +346,6 @@ pub enum Command {
     Ping(PingCommand),
     /// Restart.
     Restart(RestartCommand),
-    /// Pull OTA.
-    Ota(OtaRequest),
     /// Reset CEC configuration.
     Reset(ResetCommand),
 }
@@ -376,7 +364,6 @@ impl Command {
             Verb::State => StateRequest::deserialize(deserializer).map(Self::State),
             Verb::Ping => PingCommand::deserialize(deserializer).map(Self::Ping),
             Verb::Restart => RestartCommand::deserialize(deserializer).map(Self::Restart),
-            Verb::Ota => OtaRequest::deserialize(deserializer).map(Self::Ota),
             Verb::Reset => ResetCommand::deserialize(deserializer).map(Self::Reset),
         }
     }
@@ -388,7 +375,6 @@ impl Command {
             Self::State(_) => Verb::State,
             Self::Ping(_) => Verb::Ping,
             Self::Restart(_) => Verb::Restart,
-            Self::Ota(_) => Verb::Ota,
             Self::Reset(_) => Verb::Reset,
         }
     }
@@ -420,7 +406,7 @@ pub struct CommandResult {
 #[serde(rename_all = "snake_case")]
 pub enum OtaState {
     /// Streaming image into inactive partition.
-    Downloading,
+    Receiving,
     /// Checking image digest and board identity.
     Verifying,
     /// Switching boot partition and restarting.

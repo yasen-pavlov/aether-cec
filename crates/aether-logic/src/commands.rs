@@ -33,7 +33,6 @@ pub fn verb(text: &str) -> Option<Verb> {
         "ping" => Some(Verb::Ping),
         "restart" => Some(Verb::Restart),
         "reset" => Some(Verb::Reset),
-        "ota" => Some(Verb::Ota),
         _ => None,
     }
 }
@@ -102,10 +101,6 @@ pub fn plan(verb: Verb, payload: &[u8], cfg: &Config, now_us: u64) -> Plan {
             } else {
                 fail(&mut plan.result, "confirm_mismatch");
             }
-        }
-        Command::Ota(ota) => {
-            plan.result.id = Some(ota.id);
-            fail(&mut plan.result, "not_implemented");
         }
     }
     plan

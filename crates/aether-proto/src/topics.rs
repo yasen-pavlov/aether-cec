@@ -53,7 +53,6 @@ impl Topics {
                 Verb::State => "cmd/state",
                 Verb::Ping => "cmd/ping",
                 Verb::Restart => "cmd/restart",
-                Verb::Ota => "cmd/ota",
                 Verb::Reset => "cmd/reset",
             },
         )

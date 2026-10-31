@@ -235,7 +235,7 @@ Serde mirrors of every object in `docs/protocol.md` §3–§9: `Status`, `TxRequ
 (typed outbound `tx`), `RawTxRequest` (lenient inbound `tx`), `BusEvent` with
 `#[serde(tag = "ev")]` variants `rx | tx | err | line`, `Telemetry`, `Config`
 (wire `cfg`), `Command` (`cmd/<verb>` dispatch via `Verb`) and `CommandResult`,
-`OtaRequest`, `StateRequest`, `OtaProgress`, `LogLine`. `Command::State` carries
+`StateRequest`, `OtaProgress`, `LogLine`, `Healthz`, `HttpError`, `OtaAccepted`. `Command::State` carries
 `StateRequest`; the other command payloads are `ConfigCommand`, `PingCommand`,
 `RestartCommand`, and `ResetCommand`.
 
@@ -316,10 +316,10 @@ wire definition. `CommandResult.id` is now optional and omitted for malformed
 commands; valid commands always echo their ID. `pa:edid` is rejected as
 `edid_unsupported` until the configuration contract includes DDC pins.
 
-The main ESP task (8000-byte stack) owns NVS, effective Config, runtime power,
+The main ESP task (32768-byte stack) owns NVS, effective Config, runtime power,
 the single heap-boxed `cec_core::bridge::Bridge`, Wi-Fi and the `EspMqttClient`
 handle. It polls Wi-Fi reconnection every five seconds after a disconnect and
-runs MQTT command effects serially. SDK defaults are resolved via the absolute
+runs MQTT and HTTP command effects serially through the same `apply_plan`. SDK defaults are resolved via the absolute
 Cargo-relative `ESP_IDF_SDKCONFIG_DEFAULTS`; firmware builds stay in-tree.
 There is no SNTP client: certificate chain/hostname validation is enabled but
 validity dates are not checked (`CONFIG_MBEDTLS_HAVE_TIME_DATE` unset), avoiding
@@ -329,14 +329,17 @@ The console reader has an explicit 6144-byte stack. A UART0 driver with a
 512-byte RX ring backs blocking stdin reads, retaining pasted 200-byte lines.
 The reader sends parsed operations through a four-entry sync channel; main alone
 writes NVS. It never echoes input; responses and EspLogger share UART0.
-Credentials are JSON blobs only in namespace `secrets`, config is an
-`aether_proto::Config` JSON blob in `cfg`, and `system/boot` is separate.
+Credentials are a JSON blob in NVS `secrets/json`; the HTTP token is a separate
+raw UTF-8 blob in `secrets/token`, excluded from credential serialization.
+Config is an `aether_proto::Config` JSON blob in `cfg`, and `system/boot` is separate.
 Wi-Fi SDK NVS storage is disabled. MQTT reset persists defaults preserving node,
 credentials and boot; console factory-reset erases the entire default NVS partition.
 WPA input must be empty (open), 8–63 printable ASCII bytes, or 64 hex digits.
 The same credential validators run on stored secrets. Invalid stored cfg/secrets
-fall back to defaults with a static scrubbed code. NVS NO_FREE_PAGES or
-NEW_VERSION_FOUND triggers a logged erase and one init retry. Wi-Fi configuration,
+fall back to defaults with a static scrubbed code, never rewriting the credential
+blob on a failed load. Token creation/replacement writes only `secrets/token`.
+NVS NO_FREE_PAGES or NEW_VERSION_FOUND triggers a logged erase and one init retry.
+Wi-Fi configuration,
 start and initial-connect failures are nonfatal. The console is started before
 fallible startup; its receiver survives every error. Remaining fatal errors enter
 a console-only loop supporting show, factory-reset (even without a Store), reboot.
@@ -370,10 +373,10 @@ The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
 0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at
 0x20000 and 0x200000. Remaining 0x20000 bytes are an unused `storage` NVS
 partition. Flash with this table and the IDF-built rollback-enabled bootloader,
-not espflash defaults. The main task marks the app valid after MQTT connects or,
-for phase-2 provisioning without a broker, after 60 s (including recovery mode).
-OTA download remains deferred; phase 5 must distinguish pending OTA from first
-provisioning before enforcing protocol §9's MQTT/status rollback deadline.
+not espflash defaults. Boot kind comes from the bootloader's running partition
+state before fallible startup: only PENDING_VERIFY requires confirmation.
+Non-OTA/USB boots are already valid, including the bootloader's blank-otadata
+initialization; there is no provisioning-confirmation path.
 Cargo's `ESP_IDF_GLOB_AETHER_*` settings stage and track `partitions.csv` in the
 generated esp-idf-sys project, where IDF resolves the custom CSV filename.
 
@@ -386,3 +389,115 @@ the main owner through a bounded event queue, never in an ISR. Phase 2 performs
 no pin configuration, allocation polls, physical sends or HPD sampling; status
 therefore has `la:null`, `bus:null`, `hpd:null`; deferred bus counters stay zero,
 while queue.max reports the request capacity (16), not an observed high-water mark.
+
+### HTTP ownership, SSE and log capture (phase 2b)
+
+`EspHttpServer` listens on port 80 with `max_open_sockets=4`,
+`lru_purge_enable=true`, a 12288-byte httpd stack and 1024-byte maximum request
+headers. Its exact method/path table is `aether_logic::http::route`; wildcard
+handlers return JSON `not_found` for unknown paths. The embedded `index.html`
+includes its CSS/vanilla JS; no assets, dependencies or build step are needed.
+The UI uses authenticated fetch streams (no token in URLs), storing the token
+in localStorage. WebCrypto SHA-256 is preferred; because port-80 LAN origins are
+not secure contexts in most browsers, a local JS SHA-256 fallback keeps upload
+functional there.
+
+Normal JSON HTTP bodies are bounded to 2048 bytes. A four-entry command mailbox
+hands operations to main, which calls `commands::plan` and the same executor
+`apply_plan` as MQTT. Config is persisted before cfg publication and response;
+TX uses the same phase-2 ordered `no_la` rejection as MQTT, returning HTTP 202.
+Read-only snapshots are copied from main at most once per second, never by
+sharing the mutable Bridge.
+HTTP replies use proto structs; failures map through the pure error-status policy.
+Main unconditionally owns the restart/reset shutdown deadline: reboot after
+two seconds or earlier on offline PUBACK, regardless of HTTP waiter timeout or
+response delivery. The handler's post-response 500-ms grace can speed up reboot
+but never gates it. OTA keeps its own post-response 500-ms grace.
+
+SSE requires a native IDF async request because esp-idf-svc unconditionally
+completes responses when its normal handler returns. The exact `/api/events`
+handler authenticates on httpd, calls `httpd_req_async_handler_begin`, and returns
+immediately. At most three 4096-byte-stack SSE tasks own copied requests, leaving
+the fourth socket for API/UI use. Each client receives a bounded 16-entry mailbox
+of shared immutable SSE strings; a full mailbox disconnects that client rather
+than blocking main, MQTT or other subscribers. Workers send an initial comment,
+then topic-suffix `event:` / exact serialized JSON `data:` chunks and a keep-alive
+comment every 15 seconds. IDF's bounded send timeout handles stuck sockets.
+Workers complete the async request and trigger socket closure on disconnect or
+overflow. A shared alive flag reclaims subscriptions even during an idle bus.
+`MqttLink::publish` is the single fan-out point for bus/status/ota; without a
+configured MQTT link, main uses the identical hub directly. The MQTT callback
+never invokes SSE or blocks on a connection.
+
+The application `log::Log` wrapper forwards only scrubbed application targets
+to EspLogger, and captures info/warn/error into `aether_logic::http::LogRing`
+(oldest-first, newest 64). Dependency records are excluded before formatting,
+preserving phase-2 secret redaction. The ring is independent of `cfg.log`;
+MQTT log publication remains deferred. Token material is never passed to log:
+32 bytes from `esp_fill_random`, bracketed by `bootloader_random_enable()` and
+`bootloader_random_disable()` before Wi-Fi/ADC startup, become 64 lowercase hex
+digits on first boot, persisted separately in `secrets/token`.
+`show token` is the sole print operation; `set token` validates/normalizes and persists
+before swapping the
+active bearer value. Both JSON and native SSE handlers call the shared pure
+`authorized(Option<Route>, Option<&str>, &str) -> bool` policy; only GET Index
+and Health are exempt, and every other route uses the full-token XOR comparison.
+
+### Push OTA and boot confirmation
+
+The HTTP upload handler runs synchronously on httpd, not main. It checks the
+running partition's PENDING_VERIFY state before reserving an atomic busy flag,
+rejecting with `409 busy` before allocating an id. A second streaming upload waits
+in httpd's accept backlog; busy covers an accepted upload awaiting reboot.
+The handler validates nonzero Content-Length and X-Sha256 against the actual
+inactive slot size, obtains a durable monotonic `o-N` id, and streams through
+`EspOta` in at most 4-KiB chunks while hashing with `sha2` (default features
+disabled). A bounded 16-entry progress mailbox feeds main for MQTT/SSE fan-out.
+`aether_logic::http::UploadProgress` owns percent deduplication and the emitted
+receiving → verifying → rebooting/failed payloads:
+`new(RequestId, usize) -> Self`, `received(&mut self, usize) -> Option<OtaProgress>`,
+`verifying(&self) -> OtaProgress`, `finished(&self, Result<(), &'static str>) -> OtaProgress`.
+Digest mismatch, short body, flash errors or a project name other than `aether` abort the writer
+without activating its slot. The Rust app descriptor explicitly names `aether`;
+`complete()` performs IDF's final image validation and sets the boot partition.
+The pending `{id,slot}` record is persisted in NVS namespace `ota` before selecting
+the partition, so a power cut never produces an untracked update. A failed
+complete clears that record. After full verification the handler sends 202
+`OtaAccepted`; main reboots at least 500 ms later. Phase 2 has no physical TX;
+phase 3 must additionally gate this reboot on transmitter idle.
+
+`Health::new()` queries `esp_ota_get_state_partition(esp_ota_get_running_partition())`
+before anything fallible. Only PENDING_VERIFY sets `BootKind::Pending`; the NVS
+record supplies the event id and detects rollback when a nonpending image runs a
+different slot. A same-slot record on a valid image is stale and is removed, never
+used to re-arm confirmation or a reboot loop. Missing/unreadable record data cannot
+turn a pending image into a provisioning boot.
+`aether_logic::http::boot_kind(bool, u32, Option<u32>) -> BootKind` exposes that
+classification; BootKind is now Valid/Pending/RolledBack (Provisioning is removed).
+`boot_action` retains its signature but removes ConfirmProvisioning:
+pending + online status PUBACK → mark valid, cancel timer, publish confirmed and
+clear pending when an id exists; pending without that proof by 60 s → reset;
+old image + successful status publication → publish rolled_back and clear pending;
+valid image → no confirmation. Failed report enqueue/removal is retried without
+reclassifying an already confirmed image as pending.
+A retained `EspTimer` one-shot independently checks bootloader state at 60 s and
+calls `esp_restart()` if still pending, even when main or startup deadlocks.
+Failure to arm that timer resets immediately, never running pending without a
+deadline. IDF's rollback-enabled bootloader marks a still-PENDING_VERIFY slot
+ABORTED on reset and boots the previous valid slot; no explicit invalid mark is
+necessary. Main/recovery polling retains the same deadline as a second path.
+`shutdown_due(u128, bool) -> bool` is the pure unconditional two-second/PUBACK
+shutdown policy. First installation of phase 2b by USB is needed before rollback
+reporting can be bench-tested: the older phase-2 image does not know this record.
+
+Protocol cutover: removed `OtaRequest`, `Command::Ota` and `Verb::Ota`; renamed
+OTA state Downloading to Receiving. This deliberately removes the obsolete
+pull-by-URL command rather than retaining a misleading compatibility alias.
+Added `Healthz`, `HttpError`, `OtaAccepted`; existing `LogLine` and `OtaProgress`
+remain the wire definitions. Host tests cover bearer mismatch positions, handler
+auth exemptions including native SSE, exact routes/reasons, header bounds, log
+eviction, SSE framing, bootloader-authoritative boot transitions, unconditional
+shutdown deadlines, upload progress success/failure sequences and §9/§11 golden
+wire objects. NVS effects, entropy quality, independent timer execution,
+firmware/network/rollback evidence remain separate from those pure tests and
+require the lead's board exercise.

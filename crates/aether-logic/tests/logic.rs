@@ -173,14 +173,7 @@ fn command_results_and_effects() {
         commands::plan(Verb::Reset, br#"{"id":"r","confirm":"aether"}"#, &cfg, 0).effect,
         Effect::Reset
     ));
-    let ota = commands::plan(
-        Verb::Ota,
-        br#"{"id":"o","url":"https://example.org/fw.bin","sha256":"abc"}"#,
-        &cfg,
-        0,
-    );
-    assert!(!ota.result.ok);
-    assert_eq!(ota.result.reason.unwrap(), "not_implemented");
+    assert!(commands::verb("ota").is_none());
     let cfg_plan = commands::plan(Verb::Cfg, br#"{"id":"c","telemetry_s":0}"#, &cfg, 0);
     assert!(matches!(cfg_plan.effect, Effect::Config));
     assert_eq!(cfg_plan.config.unwrap().telemetry_s, 0);

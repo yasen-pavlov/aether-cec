@@ -29,6 +29,10 @@ pub enum ConsoleCommand {
     Node(String),
     /// Display redacted state.
     Show,
+    /// Print the API token only on explicit serial request.
+    ShowToken,
+    /// Replace the HTTP bearer token.
+    Token(String),
     /// Restart the device.
     Reboot,
     /// Erase config and secrets.
@@ -85,6 +89,10 @@ pub fn parse(line: &str) -> Result<ConsoleCommand, &'static str> {
             Ok(ConsoleCommand::Node((*node).into()))
         }
         ["show"] => Ok(ConsoleCommand::Show),
+        ["show", "token"] => Ok(ConsoleCommand::ShowToken),
+        ["set", "token", token] if crate::http::digest(token).is_some() => {
+            Ok(ConsoleCommand::Token(token.to_ascii_lowercase()))
+        }
         ["reboot"] => Ok(ConsoleCommand::Reboot),
         ["factory-reset"] => Ok(ConsoleCommand::FactoryReset),
         _ => Err("invalid_command"),

@@ -83,7 +83,6 @@ fn every_documented_json_example_round_trips() {
                     6 => round_trip::<Telemetry>(&text),
                     7 => round_trip::<Config>(&text),
                     8 => round_trip::<CommandResult>(&text),
-                    9 if example.get("url").is_some() => round_trip::<OtaRequest>(&text),
                     9 => round_trip::<OtaProgress>(&text),
                     _ => unreachable!(),
                 }
@@ -94,7 +93,7 @@ fn every_documented_json_example_round_trips() {
             block.push('\n');
         }
     }
-    assert_eq!(count, 28, "all concrete fenced examples in sections 3–9");
+    assert_eq!(count, 27, "all concrete fenced examples in sections 3–9");
 }
 
 #[test]
@@ -242,10 +241,6 @@ fn each_command_is_dispatched_by_topic_without_an_extra_payload_tag() {
         (Verb::Ping, r#"{"id":"c","echo":"abc"}"#),
         (Verb::Restart, r#"{"id":"c"}"#),
         (Verb::Reset, r#"{"id":"c","confirm":"aether"}"#),
-        (
-            Verb::Ota,
-            r#"{"id":"c","url":"https://example.com/fw.bin","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
-        ),
     ] {
         let parsed = command(verb, text);
         assert_eq!(parsed.verb(), verb);
@@ -305,13 +300,6 @@ fn bounded_text_fields_reject_overlong_input() {
         value[field] = json!("a".repeat(length + 1));
         assert!(serde_json::from_str::<ConfigCommand>(&value.to_string()).is_err());
     }
-    for (field, length) in [("url", 160), ("sha256", 64)] {
-        let mut value = json!({"id":"o", "url":"https://example.com/a", "sha256":"0".repeat(64)});
-        value[field] = json!("a".repeat(length));
-        assert!(serde_json::from_str::<OtaRequest>(&value.to_string()).is_ok());
-        value[field] = json!("a".repeat(length + 1));
-        assert!(serde_json::from_str::<OtaRequest>(&value.to_string()).is_err());
-    }
     for (field, length) in [("fw", 24), ("reason", 32)] {
         let mut value = json!({"id":"o", "state":"failed"});
         value[field] = json!("a".repeat(length));
@@ -366,7 +354,6 @@ fn topics_cover_the_contract_with_maximum_node_length() {
         Verb::Ping,
         Verb::Restart,
         Verb::Reset,
-        Verb::Ota,
     ] {
         assert_eq!(
             Topics::cmd(&node, verb).as_str(),
@@ -391,4 +378,23 @@ fn escaped_strings_work_in_diagnostics_and_all_command_result_fields() {
     round_trip::<BusEvent>(
         r#"{"ev":"tx","seq":1,"t_us":2,"origin":"host","status":"rejected","reason":"malformed"}"#,
     );
+}
+
+#[test]
+fn http_health_errors_and_push_ota_match_the_contract() {
+    round_trip::<Healthz>(r#"{"online":true,"fw":"0.2.0","boot":3}"#);
+    round_trip::<HttpError>(r#"{"ok":false,"reason":"unauthorized"}"#);
+    round_trip::<OtaAccepted>(r#"{"id":"o-1"}"#);
+    for text in [
+        r#"{"id":"o-1","state":"receiving","pct":37}"#,
+        r#"{"id":"o-1","state":"verifying"}"#,
+        r#"{"id":"o-1","state":"rebooting"}"#,
+        r#"{"id":"o-1","state":"failed","reason":"sha256_mismatch"}"#,
+        r#"{"id":"o-1","state":"confirmed","fw":"0.2.0"}"#,
+        r#"{"id":"o-1","state":"rolled_back","fw":"0.1.0"}"#,
+    ] {
+        round_trip::<OtaProgress>(text);
+    }
+    assert!(serde_json::from_str::<Verb>(r#""ota""#).is_err());
+    assert!(serde_json::from_str::<OtaProgress>(r#"{"id":"o-1","state":"downloading"}"#).is_err());
 }

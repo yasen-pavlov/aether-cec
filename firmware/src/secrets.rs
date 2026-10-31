@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub struct Secrets {
     pub wifi: Option<Wifi>,
     pub mqtt: Option<Mqtt>,
+    #[serde(skip)]
+    pub token: String,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Wifi {
@@ -41,14 +43,28 @@ impl Secrets {
             }
             Ok(value)
         })();
-        Ok(loaded.unwrap_or_else(|_| {
+        let mut value = loaded.unwrap_or_else(|_| {
             log::warn!("stored_secrets_invalid");
             Self::default()
-        }))
+        });
+        value.token = read_json(&store.secrets, "token")?
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|token| aether_logic::http::digest(token).is_some())
+            .unwrap_or_default();
+        if value.token.is_empty() {
+            value.token = crate::ffi::new_token();
+            // Never overwrite credentials when their read/validation fell back.
+            value.save_token(store)?;
+        }
+        Ok(value)
     }
     // Called only by the serial-console dispatcher.
     pub fn save(&self, store: &Store) -> Result<()> {
         store.secrets.set_blob("json", &serde_json::to_vec(self)?)?;
+        Ok(())
+    }
+    pub fn save_token(&self, store: &Store) -> Result<()> {
+        store.secrets.set_blob("token", self.token.as_bytes())?;
         Ok(())
     }
 }

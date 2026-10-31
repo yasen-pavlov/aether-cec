@@ -27,11 +27,15 @@ struct Control {
     connects: AtomicU32,
     pending_puback: AtomicU32,
     shutdown_acked: AtomicBool,
+    status_id: AtomicU32,
+    status_acked: AtomicBool,
+    last_published: AtomicU32,
 }
 pub struct MqttLink {
     pub client: EspMqttClient<'static>,
     pub events: Receiver<Message>,
     pub connects: u32,
+    pub hub: Arc<crate::events::Hub>,
     dropped: u64,
     ingress_dropped: Arc<AtomicU32>,
     expired: Arc<AtomicU32>,
@@ -86,9 +90,14 @@ impl MqttLink {
                 EventPayload::Disconnected => {
                     assembler.clear();
                     control_cb.connected.store(false, Ordering::Release);
+                    control_cb.status_acked.store(false, Ordering::Release);
                     None
                 }
                 EventPayload::Published(id) => {
+                    control_cb.last_published.store(id, Ordering::Release);
+                    if control_cb.status_id.load(Ordering::Acquire) == id {
+                        control_cb.status_acked.store(true, Ordering::Release);
+                    }
                     if control_cb.pending_puback.load(Ordering::Acquire) == id {
                         control_cb.shutdown_acked.store(true, Ordering::Release);
                     }
@@ -132,6 +141,7 @@ impl MqttLink {
             client,
             events,
             connects: 0,
+            hub: Arc::new(crate::events::Hub::default()),
             dropped: 0,
             ingress_dropped,
             expired,
@@ -159,7 +169,18 @@ impl MqttLink {
     pub fn shutdown_acked(&self) -> bool {
         self.control.shutdown_acked.load(Ordering::Acquire)
     }
+    pub fn watch_status(&self, id: u32) {
+        self.control.status_acked.store(false, Ordering::Release);
+        self.control.status_id.store(id, Ordering::Release);
+        if self.control.last_published.load(Ordering::Acquire) == id {
+            self.control.status_acked.store(true, Ordering::Release);
+        }
+    }
+    pub fn status_published(&self) -> bool {
+        self.connected() && self.control.status_acked.load(Ordering::Acquire)
+    }
     pub fn publish(&mut self, topic: &str, qos: QoS, retain: bool, payload: &[u8]) -> Option<u32> {
+        self.hub.publish(topic, payload);
         match self.client.enqueue(topic, qos, retain, payload) {
             Ok(id) => {
                 self.enqueue_recovered = true;

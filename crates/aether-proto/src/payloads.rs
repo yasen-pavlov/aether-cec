@@ -430,3 +430,30 @@ pub struct LogLine {
     /// Human-readable diagnostic (up to 160 UTF-8 bytes).
     pub msg: String<160>,
 }
+
+/// Unauthenticated HTTP liveness response (no provisioning information).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Healthz {
+    /// Application is running.
+    pub online: bool,
+    /// Running firmware identifier.
+    pub fw: String<24>,
+    /// Persistent boot count.
+    pub boot: u32,
+}
+
+/// Uniform HTTP error body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpError {
+    /// Always false.
+    pub ok: bool,
+    /// Static, bounded error code.
+    pub reason: crate::Reason,
+}
+
+/// Accepted push update identifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OtaAccepted {
+    /// Bridge-assigned identifier persisted across reboot.
+    pub id: crate::RequestId,
+}

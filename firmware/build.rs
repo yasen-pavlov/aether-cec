@@ -1,5 +1,21 @@
 fn main() {
     embuild::espidf::sysenv::output();
+    // The exported app-descriptor macro references both active and inactive SDK
+    // cfgs. Register their names even when this particular IDF leaves them unset.
+    for name in [
+        "esp_idf_app_compile_time_date",
+        "esp_idf_app_reproducible_build",
+        "esp_idf_version_patch_at_least_5_1_7",
+        "esp_idf_version_patch_at_least_5_2_3",
+        "esp_idf_version_at_least_5_3_2",
+        "esp_idf_version_at_least_5_4_0",
+        "esp_idf_version_at_least_6_1_0",
+        "esp_idf_idf_target_linux",
+        "esp_idf_app_build_type_pure_ram_app",
+        "esp_idf_version_patch_at_least_5_3_2",
+    ] {
+        println!("cargo:rustc-check-cfg=cfg({name})");
+    }
     let sha = std::process::Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])
         .output()

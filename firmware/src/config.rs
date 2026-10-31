@@ -7,6 +7,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub struct Store {
     pub cfg: EspDefaultNvs,
     pub secrets: EspDefaultNvs,
+    pub ota: std::sync::Arc<std::sync::Mutex<EspDefaultNvs>>,
     pub boot: u32,
 }
 impl Store {
@@ -31,6 +32,11 @@ impl Store {
         system.set_u32("boot", boot)?;
         Ok(Self {
             cfg: EspDefaultNvs::new(partition.clone(), "cfg", true)?,
+            ota: std::sync::Arc::new(std::sync::Mutex::new(EspDefaultNvs::new(
+                partition.clone(),
+                "ota",
+                true,
+            )?)),
             secrets: EspDefaultNvs::new(partition, "secrets", true)?,
             boot,
         })
