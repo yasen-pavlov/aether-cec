@@ -345,11 +345,11 @@ impl Hardware {
             sys::esp_timer_start_once(self.interrupts.sample_timer, at_us - now) == sys::ESP_OK
         }
     }
-    pub fn send(&mut self, block: &Block, block_start_us: &u64) -> bool {
+    pub fn send(&mut self, block: &Block, block_start_us: &u64) -> Result<u64, &'static str> {
         // A detached aborted waveform must finish before RMT can own the pad
         // again. Do not overwrite buffers still consumed by the copy encoder.
         if !self.routed && !self.finished() {
-            return false;
+            return Err("detached_busy");
         }
         self.interrupts.ack_armed.store(false, Ordering::Release);
         for (out, symbol) in self.buffers[self.slot]
@@ -368,12 +368,20 @@ impl Hardware {
         // LOW; requiring HIGH here aborts every acknowledged directed header.
         // The active RMT transaction owns the pad until the queued start.
         let header = block.len == 11;
-        if !block.can_launch(crate::ffi::now_us(), *block_start_us, self.level())
-            || (header && !self.interrupts.edges.is_empty())
-            || (!header && (!self.routed || self.finished()))
-        {
-            return false;
+        if !block.can_launch(crate::ffi::now_us(), *block_start_us, self.level()) {
+            return Err(if header {
+                "launch_line_low"
+            } else {
+                "chain_late"
+            });
         }
+        if header && !self.interrupts.edges.is_empty() {
+            return Err("launch_edges_pending");
+        }
+        if !header && (!self.routed || self.finished()) {
+            return Err("chain_inactive");
+        }
+        let submitted_us;
         unsafe {
             if !self.routed {
                 core::ptr::write_volatile(
@@ -383,6 +391,7 @@ impl Hardware {
                 self.routed = true;
             }
             self.interrupts.in_flight.fetch_add(1, Ordering::AcqRel);
+            submitted_us = crate::ffi::now_us();
             if sys::rmt_transmit(
                 self.channel,
                 self.encoder,
@@ -392,11 +401,11 @@ impl Hardware {
             ) != sys::ESP_OK
             {
                 self.interrupts.in_flight.fetch_sub(1, Ordering::Release);
-                return false;
+                return Err("rmt_rejected");
             }
         }
         self.slot = (self.slot + 1) % 4;
-        true
+        Ok(submitted_us)
     }
     /// Release immediately. RMT keeps running detached; never stop ESP32 RMT.
     pub fn abort(&mut self) {

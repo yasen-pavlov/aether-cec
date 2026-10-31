@@ -377,7 +377,10 @@ The MQTT log topic is intentionally absent; cfg.log is stored but inert.
 
 Bus events observed while MQTT is disconnected are still sent to SSE, counted as
 dropped and summarized after reconnect; they are not queued ahead of retained
-status/config on a new connection.
+status/config on a new connection. Main drains the bus channel on every turn,
+even without MQTT credentials. Start the bus task only after the network and HTTP
+constructors complete, so no producer fills the channel while main is still
+initializing those services; HTTP's initial snapshot is unmeasured until then.
 
 The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
 0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at
@@ -409,8 +412,12 @@ level 3, both edges. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
 and release/acquire indices, preserving full 64-bit ESP timer timestamps.
 Drop-newest edge overruns increment telemetry `rx.errors` and reset decoding;
 they are not counted as lost bus events. Event-channel/outbox losses accumulate
-separately as `err kind:overrun dropped:N`. Retrying that report neither adds a
-loss nor consumes a sequence; its next sequence is committed only after enqueue.
+separately as `err kind:overrun dropped:N`. The host-tested `bus::Losses`
+accumulator retains the true count across failed report enqueues; retrying a
+report neither adds a loss nor consumes a sequence. Its next sequence is committed
+only after enqueue. Offline MQTT loss reports retain their original dropped count
+and are not transferred back to the bus owner until connected, avoiding recursive
+one-loss reports.
 The IRAM ISR and ISR-dispatched sample/ACK-release timers perform no allocation,
 logging, serialization or network calls. Timer interrupts are pinned to core 1.
 IDF 5.4.2 requires `ESP_TIMER_SHOW_EXPERIMENTAL` to make the CPU1 affinity
@@ -433,18 +440,26 @@ RMT TX runs at 1 MHz with 64 memory symbols and queue depth 4. A host-tested
 allocation-free renderer emits optional start, eight MSB-first bits, EOM and
 initiator ACK including trailing high. Four owned symbol buffers outlive queued
 transactions. Every block calls task-context `rmt_transmit` directly; there is no
-start timer. Immediately before launch require a High pin and an empty edge ring.
+start timer. A fresh header requires a High pin and an empty edge ring; chained
+blocks may queue during a legitimate follower ACK Low while routed RMT is active.
 Chained blocks must queue strictly before `block_start_us - 100 us`, otherwise
 the executor reports a line error rather than launching a late block.
 Each block's first falling edge is timestamped by the GPIO ISR and re-anchors
 `Schedule` and `Tx::block_started`, including chaining and the final-attempt start.
-The scheduled origin is only a fallback deadline: if no matching falling edge
-is seen within 300 us, fail as a line error, never sample from the prediction.
+For a fresh header, `Schedule::submitted(at_us)` starts the 300-us origin deadline
+at the timestamp immediately before `rmt_transmit`, excluding render/copy/routing
+preparation. Chained blocks retain their predicted physical start. These fallback
+origins are only failure deadlines: if no matching falling edge is seen within
+300 us, fail as a line error, never sample from the prediction.
 ISR sample timers use that block's physical origin plus the core offset and
 retain actual sample timestamps; missed/late samples fail through Tx.
 Driven zero read high or a decoder error on our own transmitting echo is a line
 error; initiator ones read low are arbitration losses classified by Tx.
 ACK polarity remains target-dependent.
+Every aborted attempt increments `tx.arb_lost` or `tx.line_error`, even if a later
+attempt succeeds. The first cause wins; six detail counters partition line errors
+as defined by protocol §6. Only after releasing on Abort, the bus task emits a
+rate-limited `tx_attempt_failed <code>` info record (at most one per second).
 
 RMT's matrix output is saved from its allocated channel, not hardcoded to channel
 0. During follower operation the matrix is switched to the released GPIO latch

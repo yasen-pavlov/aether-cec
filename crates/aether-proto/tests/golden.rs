@@ -398,3 +398,32 @@ fn http_health_errors_and_push_ota_match_the_contract() {
     assert!(serde_json::from_str::<Verb>(r#""ota""#).is_err());
     assert!(serde_json::from_str::<OtaProgress>(r#"{"id":"o-1","state":"downloading"}"#).is_err());
 }
+
+#[test]
+fn attempt_diagnostics_round_trip_and_accept_older_telemetry() {
+    let legacy = json!({
+        "host": 1, "local": 0, "ack": 1, "nack": 0, "arb_lost": 2,
+        "line_error": 0, "busy": 0, "rejected": 0, "retransmits": 4
+    });
+    let old: TxCounters = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(
+        old.origin_missing
+            + old.sample_late
+            + old.launch_rejected
+            + old.echo_error
+            + old.edge_overrun
+            + old.driven_low_mismatch,
+        0
+    );
+    let mut current = legacy;
+    current["origin_missing"] = json!(1);
+    current["sample_late"] = json!(2);
+    current["launch_rejected"] = json!(3);
+    current["echo_error"] = json!(4);
+    current["edge_overrun"] = json!(5);
+    current["driven_low_mismatch"] = json!(6);
+    current["line_error"] = json!(21);
+    round_trip::<TxCounters>(&current.to_string());
+    let parsed: TxCounters = serde_json::from_value(current.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), current);
+}

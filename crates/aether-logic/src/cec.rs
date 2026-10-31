@@ -124,6 +124,14 @@ impl Schedule {
             _ => None,
         }
     }
+    /// Start the fresh-header origin timeout at the actual RMT submission, not
+    /// at the earlier core action (before rendering and hardware preparation).
+    /// Chained blocks retain their predicted physical start at the previous end.
+    pub fn submitted(&mut self, at_us: u64) {
+        if self.active && self.start && !self.observed {
+            self.start_us = at_us;
+        }
+    }
     /// Capture only the first falling edge of this block, using its ISR timestamp.
     pub fn edge(&mut self, edge: Edge) -> Option<u64> {
         if self.active
@@ -163,6 +171,75 @@ impl Schedule {
         };
         let bit = at_us.saturating_sub(prefix) / timing::BIT;
         bit < 8 && self.byte & (1 << (7 - bit)) == 0
+    }
+    /// Classify the same physical sample passed to `Tx`, without changing its
+    /// retry policy. Early samples remain ignored, as in `Tx::line_sample`.
+    pub fn sample_failure(&self, at_us: u32, sample: Edge) -> Option<AttemptFailure> {
+        let deadline = self.start_us.saturating_add(u64::from(at_us));
+        if sample.t_us < deadline {
+            return None;
+        }
+        if sample.t_us > deadline.saturating_add(u64::from(timing::SAMPLE_SLACK)) {
+            return Some(AttemptFailure::SampleLate);
+        }
+        if self.driven_low(at_us) && sample.level != Level::Low {
+            return Some(AttemptFailure::DrivenLowMismatch);
+        }
+        let bit = at_us.saturating_sub(timing::START_TOTAL.nominal) / timing::BIT;
+        if self.start && bit < 4 && !self.driven_low(at_us) && sample.level == Level::Low {
+            return Some(AttemptFailure::ArbLost);
+        }
+        None
+    }
+}
+
+/// One failed transmission attempt, including failures hidden by a later ACK.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptFailure {
+    /// An initiator one was dominated by another initiator.
+    ArbLost,
+    /// No first falling edge arrived within the submission window.
+    OriginMissing,
+    /// A requested sample was missing or outside its allowed slack.
+    SampleLate,
+    /// RMT launch/queueing preconditions or submission failed.
+    LaunchRejected,
+    /// The decoder rejected our active waveform.
+    EchoError,
+    /// GPIO edges were lost during our active waveform.
+    EdgeOverrun,
+    /// A driven zero was sampled high.
+    DrivenLowMismatch,
+}
+impl AttemptFailure {
+    /// Stable, credential-free diagnostic code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ArbLost => "arb_lost",
+            Self::OriginMissing => "origin_missing",
+            Self::SampleLate => "sample_late",
+            Self::LaunchRejected => "launch_rejected",
+            Self::EchoError => "echo_error",
+            Self::EdgeOverrun => "edge_overrun",
+            Self::DrivenLowMismatch => "driven_low_mismatch",
+        }
+    }
+    /// Count exactly once, when the executor consumes the attempt's Abort.
+    pub fn record(self, tx: &mut aether_proto::TxCounters) {
+        if self == Self::ArbLost {
+            tx.arb_lost += 1;
+            return;
+        }
+        tx.line_error += 1;
+        match self {
+            Self::OriginMissing => tx.origin_missing += 1,
+            Self::SampleLate => tx.sample_late += 1,
+            Self::LaunchRejected => tx.launch_rejected += 1,
+            Self::EchoError => tx.echo_error += 1,
+            Self::EdgeOverrun => tx.edge_overrun += 1,
+            Self::DrivenLowMismatch => tx.driven_low_mismatch += 1,
+            Self::ArbLost => unreachable!(),
+        }
     }
 }
 

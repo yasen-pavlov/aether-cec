@@ -1,7 +1,8 @@
 //! Dedicated core-1 bus owner. Main only exchanges bounded commands/events.
 use crate::{config::Result, ffi};
 use aether_logic::{
-    cec::{Block, Health, Schedule},
+    bus::Losses,
+    cec::{AttemptFailure, Block, Health, Schedule},
     status::BusSnapshot,
 };
 use aether_proto::{BusEvent, BusState};
@@ -146,7 +147,9 @@ struct Runner {
     block_duration_us: u64,
     last_ours: bool,
     frame_acked: bool,
-    lost: u32,
+    lost: Losses,
+    failure: Option<(AttemptFailure, &'static str)>,
+    failure_log_at: u64,
 }
 impl Runner {
     fn new(init: Init) -> Self {
@@ -185,19 +188,35 @@ impl Runner {
             block_duration_us: 0,
             last_ours: false,
             frame_acked: false,
-            lost: 0,
+            lost: Losses::default(),
+            failure: None,
+            failure_log_at: 0,
         }
     }
     fn publish(&mut self, event: BusEvent) {
         if self.events.try_send(event).is_err() {
-            self.lost = self.lost.saturating_add(1);
+            self.lost.add(1);
         }
     }
-    fn overrun(&mut self, dropped: u32) {
-        if aether_logic::bus::report_overrun(&mut self.bridge, dropped, ffi::now_us(), |event| {
+    fn overrun(&mut self) {
+        self.lost.report(&mut self.bridge, ffi::now_us(), |event| {
             self.events.try_send(event).is_ok()
-        }) {
-            self.lost = 0;
+        });
+    }
+    fn failure(&mut self, kind: AttemptFailure, code: &'static str) {
+        // A decoder error can follow a launch/sample failure on the same attempt.
+        // Keep the first cause; Abort counts and logs it only once.
+        self.failure.get_or_insert((kind, code));
+    }
+    fn sample(&mut self, offset: u32, sample: Edge) {
+        let failure = self.schedule.sample_failure(offset, sample);
+        if let Some(kind) = failure {
+            self.failure(kind, kind.code());
+        }
+        if failure == Some(AttemptFailure::DrivenLowMismatch) {
+            self.tx.line_error(sample.t_us);
+        } else {
+            self.tx.line_sample(sample.level, sample.t_us);
         }
     }
     fn rx(&mut self, event: RxEvent, now: u64) {
@@ -221,6 +240,7 @@ impl Runner {
                 self.stats.rx.errors += 1;
                 self.frame_acked = false;
                 if self.schedule.active() {
+                    self.failure(AttemptFailure::EchoError, "echo_error");
                     self.tx.line_error(now);
                     self.schedule.clear();
                 }
@@ -288,7 +308,8 @@ impl Runner {
                 self.bridge.config().ack
             });
             self.decoder.set_transmitting(self.schedule.active());
-            if self.tx.in_progress() {
+            if self.schedule.active() {
+                self.failure(AttemptFailure::EdgeOverrun, "edge_overrun");
                 self.tx.line_error(now);
                 self.schedule.clear();
             }
@@ -344,7 +365,7 @@ impl Runner {
                     self.power = power;
                     self.bridge.set_power(power);
                 }
-                Command::Overrun(dropped) => self.lost = self.lost.saturating_add(dropped),
+                Command::Overrun(dropped) => self.lost.add(dropped),
                 Command::Config { core, listener } => {
                     self.deferred_config = Some((core, listener));
                     break;
@@ -383,16 +404,13 @@ impl Runner {
             }
             while let Some(sample) = self.hardware.interrupts.samples.pop() {
                 if let Some(offset) = self.sample_offset {
-                    if self.schedule.driven_low(offset) && sample.level != Level::Low {
-                        self.tx.line_error(sample.t_us);
-                    } else {
-                        self.tx.line_sample(sample.level, sample.t_us);
-                    }
+                    self.sample(offset, sample);
                 }
             }
             let step_now = ffi::now_us();
             let action = if let Some(deadline) = self.schedule.origin_deadline() {
                 if step_now >= deadline {
+                    self.failure(AttemptFailure::OriginMissing, "origin_missing");
                     self.tx.line_error(step_now);
                     self.tx
                         .step(step_now, self.decoder.quiet_since_us(step_now))
@@ -412,27 +430,34 @@ impl Runner {
                     eom,
                     block_start_us,
                 } => {
+                    if start {
+                        self.failure = None;
+                    }
                     self.decoder.set_transmitting(true);
                     let block = Block::render(start, byte, eom);
                     self.block_duration_us = block.duration_us();
                     self.waveform_end_us = Some(block_start_us + self.block_duration_us);
                     self.sample_offset = None;
-                    if !self.hardware.send(&block, &block_start_us) {
-                        self.tx.line_error(ffi::now_us());
-                        self.schedule.clear();
+                    match self.hardware.send(&block, &block_start_us) {
+                        Ok(submitted_us) => self.schedule.submitted(submitted_us),
+                        Err(code) => {
+                            self.failure(AttemptFailure::LaunchRejected, code);
+                            self.tx.line_error(ffi::now_us());
+                            self.schedule.clear();
+                        }
                     }
                 }
                 TxAction::SampleAt { at_us } => {
                     self.sample_offset = Some(at_us);
                     let deadline = deadline.expect("sample action has deadline");
                     if !self.hardware.sample(deadline) {
-                        let sample_now = ffi::now_us();
-                        let level = self.hardware.level();
-                        if self.schedule.driven_low(at_us) && level != Level::Low {
-                            self.tx.line_error(sample_now);
-                        } else {
-                            self.tx.line_sample(level, sample_now);
-                        }
+                        self.sample(
+                            at_us,
+                            Edge {
+                                level: self.hardware.level(),
+                                t_us: ffi::now_us(),
+                            },
+                        );
                     }
                 }
                 TxAction::Abort => {
@@ -441,6 +466,18 @@ impl Runner {
                     self.sample_offset = None;
                     self.waveform_end_us = None;
                     self.schedule.clear();
+                    let (kind, code) = self
+                        .failure
+                        .take()
+                        .unwrap_or((AttemptFailure::SampleLate, "sample_late"));
+                    kind.record(&mut self.stats.tx);
+                    // Abort/release comes before potentially blocking UART logging.
+                    // Counters retain every attempt; logs are capped at one per second.
+                    let failed_at = ffi::now_us();
+                    if failed_at >= self.failure_log_at {
+                        log::info!("tx_attempt_failed {code}");
+                        self.failure_log_at = ffi::now_us().saturating_add(1_000_000);
+                    }
                 }
                 TxAction::Done {
                     outcome,
@@ -458,8 +495,7 @@ impl Runner {
                     match outcome.status {
                         cec_core::TxStatus::Ack => self.stats.tx.ack += 1,
                         cec_core::TxStatus::Nack => self.stats.tx.nack += 1,
-                        cec_core::TxStatus::ArbLost => self.stats.tx.arb_lost += 1,
-                        cec_core::TxStatus::LineError => self.stats.tx.line_error += 1,
+                        cec_core::TxStatus::ArbLost | cec_core::TxStatus::LineError => {}
                         cec_core::TxStatus::Busy => self.stats.tx.busy += 1,
                     }
                     if let Some(event) = self.bridge.on_tx_done(outcome, final_attempt_start_us) {
@@ -486,7 +522,7 @@ impl Runner {
                     }
                 }
             }
-            self.overrun(self.lost);
+            self.overrun();
             self.stats.la = self.bridge.config().la;
             self.stats.state = self.health.state();
             self.stats.depth = self.bridge.queue_depth() as u8;

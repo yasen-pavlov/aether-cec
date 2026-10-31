@@ -1,7 +1,7 @@
 //! CEC executor timing, health, listener and concurrent ring regressions.
 use aether_logic::{
     bus,
-    cec::{Block, EdgeRing, Health, Schedule, ack_in_window},
+    cec::{AttemptFailure, Block, EdgeRing, Health, Schedule, ack_in_window},
     config,
 };
 use aether_proto::{BusEvent, BusState, TxStatus};
@@ -417,9 +417,11 @@ fn ack_window_uses_full_timestamp_across_low_word_wrap() {
 #[test]
 fn overrun_report_retries_preserve_count_and_sequence_until_accepted() {
     let mut bridge = Bridge::new(config::core_config(&config::defaults()).unwrap(), u32::MAX);
+    let mut losses = bus::Losses::default();
+    losses.add(1);
     let mut tries = 0;
     for _ in 0..2000 {
-        assert!(!bus::report_overrun(&mut bridge, 1, 10, |event| {
+        assert!(!losses.report(&mut bridge, 10, |event| {
             assert!(matches!(
                 event,
                 BusEvent::Err {
@@ -434,7 +436,7 @@ fn overrun_report_retries_preserve_count_and_sequence_until_accepted() {
         assert_eq!(bridge.seq(), u32::MAX);
     }
     assert_eq!(tries, 2000);
-    assert!(bus::report_overrun(&mut bridge, 1, 11, |event| {
+    assert!(losses.report(&mut bridge, 11, |event| {
         assert!(matches!(
             event,
             BusEvent::Err {
@@ -446,9 +448,7 @@ fn overrun_report_retries_preserve_count_and_sequence_until_accepted() {
         true
     }));
     assert_eq!(bridge.seq(), 0);
-    assert!(bus::report_overrun(&mut bridge, 0, 12, |_| panic!(
-        "no losses"
-    )));
+    assert!(losses.report(&mut bridge, 12, |_| panic!("no losses")));
     assert_eq!(bridge.seq(), 0);
 }
 
@@ -471,6 +471,15 @@ fn launch_guard_distinguishes_bus_acquisition_from_ack_time_queueing() {
 /// Render the wired-AND echo, including a follower stretching only the ACK low.
 /// Queueing a block does not advance the physical line to its future origin.
 fn transmit_with_echo(frame: &cec_core::Frame, ack_low: u32, launch_delay: u64) {
+    transmit_with_echo_after_preparation(frame, ack_low, launch_delay, 0);
+}
+
+fn transmit_with_echo_after_preparation(
+    frame: &cec_core::Frame,
+    ack_low: u32,
+    launch_delay: u64,
+    preparation_us: u64,
+) {
     let mut tx = Tx::new();
     tx.start(
         cec_core::tx::TxRequest {
@@ -534,7 +543,13 @@ fn transmit_with_echo(frame: &cec_core::Frame, ack_low: u32, launch_delay: u64) 
                 assert!(block.can_launch(now, block_start_us, level));
                 queued_while_low |= !start && level == Level::Low;
                 blocks += 1;
-                let origin = block_start_us + if start { launch_delay } else { 0 };
+                let origin = if start {
+                    now += preparation_us;
+                    schedule.submitted(now);
+                    now + launch_delay
+                } else {
+                    block_start_us
+                };
                 queue_echo(&block, origin, ack_low, &mut edges);
             }
             TxAction::SampleAt { at_us } => sample = Some((deadline.unwrap(), at_us)),
@@ -677,4 +692,231 @@ fn broadcast_ack_polarity_and_zero_initiator_samples() {
             );
         }
     }
+}
+
+#[test]
+fn fresh_host_launch_excludes_preparation_from_origin_timeout() {
+    // Rendering/copying/routing can consume the entire old 300-us window before
+    // rmt_transmit is even called. Keep the window at 300 us after submission.
+    for preparation in [0, Schedule::ORIGIN_TIMEOUT_US + 1, 5_000] {
+        for (to, data, ack_low) in [
+            (5, &[0x8f][..], timing::ACK_LOW),
+            (4, &[0x8f][..], timing::ACK_LOW),
+            (cec_core::BROADCAST, &[0x85][..], timing::DATA_LOW_1.nominal),
+            (
+                cec_core::BROADCAST,
+                &[0x87, 1, 0x23, 0x45][..],
+                timing::DATA_LOW_1.nominal,
+            ),
+        ] {
+            transmit_with_echo_after_preparation(
+                &cec_core::Frame::new(0, to, data).unwrap(),
+                ack_low,
+                Schedule::ORIGIN_TIMEOUT_US - 1,
+                preparation,
+            );
+        }
+    }
+}
+
+#[test]
+fn submission_reanchors_only_fresh_headers_and_keeps_origin_window_strict() {
+    for start in [true, false] {
+        let mut schedule = Schedule::default();
+        schedule.action(TxAction::SendBlock {
+            block_start_us: 10_000,
+            start,
+            byte: 0,
+            eom: true,
+        });
+        schedule.submitted(12_000);
+        let expected = if start { 12_000 } else { 10_000 };
+        assert_eq!(
+            schedule.origin_deadline(),
+            Some(expected + Schedule::ORIGIN_TIMEOUT_US)
+        );
+        assert_eq!(
+            schedule.edge(Edge {
+                level: Level::Low,
+                t_us: expected + Schedule::ORIGIN_TIMEOUT_US + 1,
+            }),
+            None
+        );
+        assert_eq!(
+            schedule.edge(Edge {
+                level: Level::Low,
+                t_us: expected + Schedule::ORIGIN_TIMEOUT_US,
+            }),
+            Some(expected + Schedule::ORIGIN_TIMEOUT_US)
+        );
+        schedule.submitted(99_000);
+        assert_eq!(schedule.origin_deadline(), None);
+        assert_eq!(
+            schedule.action(TxAction::SampleAt {
+                at_us: timing::SAMPLE_AT,
+            }),
+            Some(expected + Schedule::ORIGIN_TIMEOUT_US + u64::from(timing::SAMPLE_AT))
+        );
+    }
+}
+
+#[test]
+fn attempt_sample_diagnostics_follow_arbitration_and_slack_boundaries() {
+    let mut schedule = Schedule::default();
+    schedule.action(TxAction::SendBlock {
+        block_start_us: 10_000,
+        start: true,
+        byte: 0x4f,
+        eom: false,
+    });
+    schedule.edge(Edge {
+        level: Level::Low,
+        t_us: 10_000,
+    });
+    let zero = timing::START_TOTAL.nominal + timing::SAMPLE_AT;
+    let one = zero + timing::BIT;
+    for offset in [zero, one] {
+        let deadline = 10_000 + u64::from(offset);
+        assert_eq!(
+            schedule.sample_failure(
+                offset,
+                Edge {
+                    level: Level::High,
+                    t_us: deadline - 1
+                }
+            ),
+            None
+        );
+        for delay in [0, timing::SAMPLE_SLACK] {
+            assert_eq!(
+                schedule.sample_failure(
+                    offset,
+                    Edge {
+                        level: Level::High,
+                        t_us: deadline + u64::from(delay)
+                    },
+                ),
+                (offset == zero).then_some(AttemptFailure::DrivenLowMismatch)
+            );
+            assert_eq!(
+                schedule.sample_failure(
+                    offset,
+                    Edge {
+                        level: Level::Low,
+                        t_us: deadline + u64::from(delay)
+                    },
+                ),
+                (offset == one).then_some(AttemptFailure::ArbLost)
+            );
+        }
+        assert_eq!(
+            schedule.sample_failure(
+                offset,
+                Edge {
+                    level: Level::Low,
+                    t_us: deadline + u64::from(timing::SAMPLE_SLACK) + 1,
+                },
+            ),
+            Some(AttemptFailure::SampleLate)
+        );
+    }
+    let ack = timing::START_TOTAL.nominal + 9 * timing::BIT + timing::SAMPLE_AT;
+    assert_eq!(
+        schedule.sample_failure(
+            ack,
+            Edge {
+                level: Level::Low,
+                t_us: 10_000 + u64::from(ack)
+            }
+        ),
+        None,
+        "the follower owns the ACK; low is not arbitration loss"
+    );
+}
+
+#[test]
+fn attempt_failure_counters_include_failures_before_a_successful_outcome() {
+    let mut tx = aether_logic::status::BusSnapshot::default().tx;
+    for failure in [
+        AttemptFailure::OriginMissing,
+        AttemptFailure::SampleLate,
+        AttemptFailure::LaunchRejected,
+        AttemptFailure::EchoError,
+        AttemptFailure::EdgeOverrun,
+        AttemptFailure::DrivenLowMismatch,
+        AttemptFailure::ArbLost,
+        AttemptFailure::ArbLost,
+    ] {
+        failure.record(&mut tx);
+    }
+    tx.ack += 1; // A later successful request must not erase the failed attempts.
+    assert_eq!(tx.arb_lost, 2);
+    assert_eq!(tx.line_error, 6);
+    for count in [
+        tx.origin_missing,
+        tx.sample_late,
+        tx.launch_rejected,
+        tx.echo_error,
+        tx.edge_overrun,
+        tx.driven_low_mismatch,
+    ] {
+        assert_eq!(count, 1);
+    }
+    assert_eq!(tx.ack, 1);
+    assert_eq!(tx.nack, 0);
+}
+
+#[test]
+fn boot_burst_losses_coalesce_once_after_channel_and_offline_drain() {
+    let mut bridge = Bridge::new(config::core_config(&config::defaults()).unwrap(), 0);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(128);
+    let mut bus_losses = bus::Losses::default();
+    let mut offline_losses = bus::Losses::default();
+    for _ in 0..253 {
+        let event = BusEvent::Line {
+            seq: bridge.next_seq(),
+            t_us: 0,
+            bus: Some(BusState::Ok),
+            hpd: None,
+            la: None,
+        };
+        if sender.try_send(event).is_err() {
+            bus_losses.add(1);
+        }
+    }
+    assert_eq!(bus_losses.pending(), 125);
+    for _ in 0..2000 {
+        assert!(!bus_losses.report(&mut bridge, 1, |event| sender.try_send(event).is_ok()));
+        assert_eq!(bridge.seq(), 253);
+    }
+    // Main drains before MQTT connection and counts the original observed events.
+    for event in receiver.try_iter() {
+        offline_losses.record(&event);
+    }
+    assert!(bus_losses.report(&mut bridge, 2, |event| sender.try_send(event).is_ok()));
+    assert_eq!(bridge.seq(), 254);
+    offline_losses.record(&receiver.try_recv().unwrap());
+    assert_eq!(offline_losses.pending(), 253, "not 128 + one report");
+    // No offline report is fed back to the bus owner. After reconnect, transfer
+    // the accumulated real count once, then publish one report on the bus stream.
+    bus_losses.add(offline_losses.pending());
+    offline_losses.clear();
+    let mut reports = Vec::new();
+    assert!(bus_losses.report(&mut bridge, 3, |event| {
+        reports.push(event);
+        true
+    }));
+    assert_eq!(reports.len(), 1);
+    assert!(matches!(
+        reports[0],
+        BusEvent::Err {
+            dropped: Some(253),
+            seq: 255,
+            ..
+        }
+    ));
+    for _ in 0..2000 {
+        assert!(bus_losses.report(&mut bridge, 4, |_| panic!("no recursive report")));
+    }
+    assert_eq!(bridge.seq(), 255);
 }

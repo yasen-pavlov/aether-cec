@@ -81,7 +81,6 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     let mut cfg = store.load_config()?;
     let mut secrets = secrets::Secrets::load(&store)?;
     let node = cfg.node.clone(); // MQTT identity changes only on restart.
-    let bus = cec::Link::new(&cfg)?;
     let peripherals = Peripherals::take()?;
     let mut net = net::Net::new(
         peripherals.modem,
@@ -102,7 +101,8 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         link.hub = hub.clone();
     }
     let ip = net.ip();
-    let initial_status = bus.online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
+    // The bus has not started yet; publish an unmeasured startup snapshot.
+    let initial_status = status::online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
     let http = http::Http::new(http::Init {
         token: &secrets.token,
         cfg: &cfg,
@@ -111,6 +111,9 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         storage: store.ota.clone(),
         hub: hub.clone(),
     })?;
+    // Start the producer only after network/HTTP constructors return. From here
+    // main drains bus events every turn, even without credentials or MQTT.
+    let bus = cec::Link::new(&cfg)?;
     let mut telemetry_at = Instant::now();
     let mut status_retry_at = Instant::now();
     let mut snapshot_at = Instant::now();
@@ -316,11 +319,13 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 telemetry_at = Instant::now();
             }
         }
-        // Preserve bus seq order; network and SSE publication never run on core 1.
+        // Always drain, even before MQTT connects or without an MQTT client.
+        // Offline events reach SSE and are counted, not retained as stale traffic.
+        // Preserve bus seq order; publication never runs on core 1.
         for event in bus.events.try_iter().take(128) {
             let bytes = serde_json::to_vec(&event)?;
             if let Some(link) = mqtt.as_mut() {
-                link.bus_event(&node, &bytes);
+                link.bus_event(&node, &event, &bytes);
             } else {
                 hub.publish("bus", &bytes);
             }

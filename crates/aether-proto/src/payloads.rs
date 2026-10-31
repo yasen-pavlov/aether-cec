@@ -358,10 +358,28 @@ pub struct TxCounters {
     pub ack: u64,
     /// Negatively acknowledged outcomes.
     pub nack: u64,
-    /// Arbitration losses.
+    /// Failed arbitration attempts, including attempts followed by success.
     pub arb_lost: u64,
-    /// Line failures.
+    /// Failed line-error attempts, including attempts followed by success.
     pub line_error: u64,
+    /// Line-error attempts without an observed block origin.
+    #[serde(default)]
+    pub origin_missing: u64,
+    /// Line-error attempts with a missing or late sample.
+    #[serde(default)]
+    pub sample_late: u64,
+    /// Line-error attempts rejected by launch/queueing checks or RMT.
+    #[serde(default)]
+    pub launch_rejected: u64,
+    /// Line-error attempts with a malformed own echo.
+    #[serde(default)]
+    pub echo_error: u64,
+    /// Line-error attempts that lost GPIO edges.
+    #[serde(default)]
+    pub edge_overrun: u64,
+    /// Line-error attempts with a driven zero sampled high.
+    #[serde(default)]
+    pub driven_low_mismatch: u64,
     /// Busy outcomes.
     pub busy: u64,
     /// Validation failures.

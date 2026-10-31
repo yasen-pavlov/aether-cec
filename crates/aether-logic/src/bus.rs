@@ -69,30 +69,61 @@ pub fn submit(bridge: &mut Bridge, payload: &[u8], now_us: u64) -> Option<BusEve
     })
 }
 
-/// Retry loss reporting without inventing an event or consuming a sequence on
-/// each failed enqueue. The caller keeps the count until this returns true.
-pub fn report_overrun(
-    bridge: &mut Bridge,
-    dropped: u32,
-    now_us: u64,
-    mut send: impl FnMut(BusEvent) -> bool,
-) -> bool {
-    if dropped == 0 {
-        return true;
+/// Pending event losses, coalesced until an ordered report can be delivered.
+#[derive(Default)]
+pub struct Losses(u32);
+impl Losses {
+    /// Add real losses; retrying a report does not itself lose an event.
+    pub fn add(&mut self, dropped: u32) {
+        self.0 = self.0.saturating_add(dropped);
     }
-    let event = BusEvent::Err {
-        seq: bridge.seq().wrapping_add(1),
-        t_us: now_us,
-        kind: aether_proto::ErrorKind::Overrun,
-        from: None,
-        to: None,
-        bits: None,
-        dropped: Some(dropped),
-    };
-    if send(event) {
-        bridge.next_seq();
-        true
-    } else {
-        false
+    /// A discarded report represents its original losses, not one new loss.
+    /// This prevents disconnected consumers from feeding reports back forever.
+    pub fn record(&mut self, event: &BusEvent) -> u32 {
+        let dropped = match event {
+            BusEvent::Err {
+                kind: aether_proto::ErrorKind::Overrun,
+                dropped: Some(dropped),
+                ..
+            } => *dropped,
+            _ => 1,
+        };
+        self.add(dropped);
+        dropped
+    }
+    /// Count to transfer to the bus owner.
+    pub fn pending(&self) -> u32 {
+        self.0
+    }
+    /// Clear only after the report or transfer was accepted.
+    pub fn clear(&mut self) {
+        self.0 = 0;
+    }
+    /// Retry without consuming a sequence or changing the count on failure.
+    pub fn report(
+        &mut self,
+        bridge: &mut Bridge,
+        now_us: u64,
+        mut send: impl FnMut(BusEvent) -> bool,
+    ) -> bool {
+        if self.0 == 0 {
+            return true;
+        }
+        let event = BusEvent::Err {
+            seq: bridge.seq().wrapping_add(1),
+            t_us: now_us,
+            kind: aether_proto::ErrorKind::Overrun,
+            from: None,
+            to: None,
+            bits: None,
+            dropped: Some(self.0),
+        };
+        if send(event) {
+            bridge.next_seq();
+            self.clear();
+            true
+        } else {
+            false
+        }
     }
 }

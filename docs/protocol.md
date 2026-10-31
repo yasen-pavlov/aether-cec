@@ -280,13 +280,31 @@ Emitted on change only; current values are mirrored in `status`.
 {"t_us":60000123,"boot":3,"rssi":-58,"link_count":1,"heap_free":168000,"heap_min":150000,
  "rx":{"frames":1531,"errors":2,"acked_by_us":303},
  "tx":{"host":765,"local":120,"ack":740,"nack":37,"arb_lost":3,"line_error":0,"busy":0,"rejected":1,
-       "retransmits":12},
+       "retransmits":12,"origin_missing":0,"sample_late":0,"launch_rejected":0,
+       "echo_error":0,"edge_overrun":0,"driven_low_mismatch":0},
  "queue":{"depth":0,"max":16},"outbox_dropped":0}
 ```
 
 Counters are per boot, monotonic. Choregos maps `rssi` → `signal_dbm`, `link_count` (MQTT connect
 count this boot) → `link_count`, `t_us/1e6` → `uptime_s`; the `rx.errors` / `tx.arb_lost` deltas feed
 the dashboard bus-health view.
+
+`tx.arb_lost` and `tx.line_error` count **failed attempts**, including failures
+hidden by a later successful attempt, not just the final outcome. The six
+additional counters partition `tx.line_error`: `origin_missing` (no block-origin
+edge within 300 µs of RMT submission for a fresh header, or the predicted chained
+start), `sample_late` (late/missing sample), `launch_rejected` (bus-acquisition,
+chaining or RMT submission rejected), `echo_error` (malformed own echo),
+`edge_overrun` (lost GPIO edges during TX), and `driven_low_mismatch` (driven zero
+sampled High). Count only the first cause per aborted attempt. Older payloads
+without these detail fields decode with zero values. `ack`, `nack`, and `busy`
+continue to count final request outcomes.
+
+Firmware also keeps rate-limited application info records in `/api/log`:
+`tx_attempt_failed <code>`, at most one per second, after releasing the failed
+waveform. Launch detail codes distinguish `detached_busy`, `launch_line_low`,
+`launch_edges_pending`, `chain_late`, `chain_inactive`, and `rmt_rejected`;
+the other codes match their counters. Counters are not rate-limited.
 
 `log` (only when `cfg.log` ≠ `"off"`): `{"t_us":…,"lvl":"warn","msg":"…"}`. Never contains
 credentials. Off by default; debugging aid for bench work.

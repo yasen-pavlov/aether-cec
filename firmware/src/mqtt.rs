@@ -1,4 +1,5 @@
 use crate::{config::Result, secrets::Mqtt};
+use aether_logic::bus::Losses;
 use aether_proto::{LWT_PAYLOAD, Topics};
 use esp_idf_svc::{
     mqtt::client::{
@@ -47,7 +48,7 @@ pub struct MqttLink {
     ingress_dropped: Arc<AtomicU32>,
     expired: Arc<AtomicU32>,
     control: Arc<Control>,
-    pending_overrun: u32,
+    pending_overrun: Losses,
     enqueue_recovered: bool,
 }
 impl MqttLink {
@@ -154,7 +155,7 @@ impl MqttLink {
             ingress_dropped,
             expired,
             control,
-            pending_overrun: 0,
+            pending_overrun: Losses::default(),
             enqueue_recovered: false,
         })
     }
@@ -206,25 +207,42 @@ impl MqttLink {
             }
             Err(_) => {
                 self.dropped = self.dropped.saturating_add(1);
-                self.pending_overrun = self.pending_overrun.saturating_add(1);
+                self.pending_overrun.add(1);
                 self.enqueue_recovered = false;
                 None
             }
         }
     }
-    pub fn bus_event(&mut self, node: &aether_proto::Node, bytes: &[u8]) {
+    pub fn bus_event(
+        &mut self,
+        node: &aether_proto::Node,
+        event: &aether_proto::BusEvent,
+        bytes: &[u8],
+    ) {
         if self.connected() {
-            self.publish(Publication {
+            let published = self.publish(Publication {
                 topic: &Topics::bus(node),
                 qos: QoS::AtLeastOnce,
                 retain: false,
                 value: bytes,
             });
+            if published.is_none() {
+                if let aether_proto::BusEvent::Err {
+                    kind: aether_proto::ErrorKind::Overrun,
+                    dropped: Some(dropped),
+                    ..
+                } = event
+                {
+                    // publish counted the failed report itself; retain the losses
+                    // it was carrying as well until MQTT delivery recovers.
+                    self.pending_overrun.add(*dropped);
+                }
+            }
         } else {
             // Do not enqueue pre-connection bus traffic ahead of status/cfg.
             self.hub.publish("bus", bytes);
-            self.dropped = self.dropped.saturating_add(1);
-            self.pending_overrun = self.pending_overrun.saturating_add(1);
+            let dropped = self.pending_overrun.record(event);
+            self.dropped = self.dropped.saturating_add(u64::from(dropped));
         }
     }
     pub fn json(&mut self, message: Publication<'_, impl serde::Serialize>) -> Option<u32> {
@@ -243,7 +261,7 @@ impl MqttLink {
             }),
             Err(_) => {
                 self.dropped = self.dropped.saturating_add(1);
-                self.pending_overrun = self.pending_overrun.saturating_add(1);
+                self.pending_overrun.add(1);
                 None
             }
         }
@@ -251,16 +269,16 @@ impl MqttLink {
     pub fn report_overrun(&mut self, bus: &crate::cec::Link) {
         let expired = self.expired.swap(0, Ordering::Relaxed);
         self.dropped = self.dropped.saturating_add(u64::from(expired));
-        self.pending_overrun = self
-            .pending_overrun
-            .saturating_add(expired)
-            .saturating_add(self.ingress_dropped.swap(0, Ordering::Relaxed));
-        if self.pending_overrun != 0
+        self.pending_overrun.add(expired);
+        self.pending_overrun
+            .add(self.ingress_dropped.swap(0, Ordering::Relaxed));
+        if self.connected()
+            && self.pending_overrun.pending() != 0
             && self.enqueue_recovered
             && bus.ready()
-            && bus.command(crate::cec::Command::Overrun(self.pending_overrun))
+            && bus.command(crate::cec::Command::Overrun(self.pending_overrun.pending()))
         {
-            self.pending_overrun = 0;
+            self.pending_overrun.clear();
         }
     }
     pub fn drops(&self) -> u64 {
