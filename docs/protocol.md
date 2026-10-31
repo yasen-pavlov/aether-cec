@@ -5,7 +5,7 @@ Native MQTT contract between the Rust ESP32 HDMI-CEC bridge ("aether") and Chore
 (`tele/<t>/SENSOR` / `cmnd/<t>/HdmiSend` / `stat/<t>/RESULT` / `tele/<t>/LWT`), which stays
 available in Choregos as `bridge.kind = "tasmota"`.
 
-Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; pull OTA; serial-only credentials). Implemented: §2, §3, §6 (counters zero until phase 3), §7, §8 (ota → not_implemented), §10; deferred: §4/§5 bus, §9 OTA, `log` topic.
+Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; push OTA over the HTTP API; serial-only credentials). Implemented: §2, §3, §6 (counters zero until phase 3), §7, §8, §10; in progress: §9 OTA, §11 HTTP API; deferred: §4/§5 bus, `log` topic.
 
 ---
 
@@ -458,7 +458,7 @@ stream), which does not exist as a trait today and is introduced with the second
 
 ---
 
-## 12. Tradeoffs decided in this draft (for approval)
+## 13. Tradeoffs decided in this draft (for approval)
 
 | # | Decision | Alternative | Why |
 |---|---|---|---|
@@ -470,7 +470,7 @@ stream), which does not exist as a trait today and is introduced with the second
 | 6 | Device µs monotonic time + `boot`, no SNTP | SNTP wall clock on device | monotonic is unambiguous; host maps via `ping` RTT; no clock steps mid-trace |
 | 7 | Firmware retransmits (spec: ≤ 5), host chooses `retries`, polls default 0 | all retries at the host | a retransmission must happen 3 bit periods after the failure — only the firmware can; but NACK-as-evidence must stay visible to the host |
 | 8 | Identity replies on-device with host-set `power`; `85`/`82` refused; no auto Feature Abort | all replies at the host (Choregos fake TV) | devices must see a TV even when Choregos is restarting; 1 s CEC response limit vs MQTT RTT |
-| 9 | Pull OTA over HTTPS + sha256 + rollback | push over MQTT | less firmware, release URL already exists |
+| 9 | Push OTA to the device's HTTP API + sha256 + rollback (revised 2026-10-31) | pull from an HTTPS URL; push over MQTT | the IoT VLAN cannot reach image hosts; operators can always reach the bridge; MQTT chunking is more firmware for no gain |
 | 10 | Credentials only via serial/NVS | MQTT-settable creds / captive portal | smaller attack surface, no secrets on the broker |
 | 11 | `tx` validation errors are bus events | silent drop / separate error topic | one place to look; replay sees them |
 
