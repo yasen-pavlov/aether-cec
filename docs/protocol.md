@@ -52,8 +52,10 @@ data-rise `1` [300, 900] / `0` [1 200, 1 800], next-fall [1 950, 2 850]. (X0:353
    power) are answered on-device so other CEC devices keep seeing a TV when Choregos is down.
 5. **Operable.** Retained status + LWT, periodic telemetry, remote config, pull-OTA with rollback.
 
-Non-goals for v1: multi-bridge arbitration, TLS client certs (plain user/password like today; TLS
-optional), MQTT 5 features, binary/CBOR encoding, Home Assistant discovery (Choregos owns HA).
+Transport: MQTT over TLS (port 8883, server certificate verified against the ESP-IDF certificate
+bundle, user/password auth) is the default; plain 1883 is a console-selectable fallback for brokers
+without a certificate. Non-goals for v1: multi-bridge arbitration, TLS client certificates, MQTT 5
+features, binary/CBOR encoding, Home Assistant discovery (Choregos owns HA).
 
 ---
 
