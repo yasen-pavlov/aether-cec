@@ -1,0 +1,10 @@
+/target
+*.env
+.env*
+
+# internal lab setup (real traces, credentials, board notes): never committed
+/local/
+# esp-idf build artefacts (phase 2)
+/firmware/.embuild/
+/firmware/target
+sdkconfig.old
