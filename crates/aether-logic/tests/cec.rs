@@ -867,12 +867,60 @@ fn attempt_failure_counters_include_failures_before_a_successful_outcome() {
 }
 
 #[test]
-fn boot_burst_losses_coalesce_once_after_channel_and_offline_drain() {
+fn boot_event_and_reconnect_backlog_follow_status_cfg_without_losses() {
+    let mut backlog = bus::EventBacklog::default();
+    let mut expected = Vec::new();
+    for seq in 1..=3 {
+        let event = BusEvent::Line {
+            seq,
+            t_us: u64::from(seq) * 100,
+            bus: Some(BusState::Ok),
+            hpd: None,
+            la: None,
+        };
+        expected.push(event.clone());
+        let bytes = serde_json::to_vec(&event).unwrap();
+        assert!(backlog.push(event, bytes).is_none());
+        backlog.flush(false, |_, _| panic!("offline or preamble not ready"));
+    }
+    let mut published = vec![serde_json::json!("status"), serde_json::json!("cfg")];
+    backlog.flush(true, |event, bytes| {
+        assert_eq!(bytes, serde_json::to_vec(&event).unwrap());
+        published.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    });
+    assert_eq!(published.len(), 5);
+    for (actual, expected) in published[2..].iter().zip(expected) {
+        assert_eq!(actual, &serde_json::to_value(expected).unwrap());
+    }
+    backlog.flush(true, |_, _| panic!("events must not be replayed twice"));
+
+    // A later disconnect uses the same FIFO, not the previous generation's readiness.
+    let event = BusEvent::Line {
+        seq: 4,
+        t_us: 1000,
+        bus: Some(BusState::StuckLow),
+        hpd: None,
+        la: None,
+    };
+    let bytes = serde_json::to_vec(&event).unwrap();
+    assert!(backlog.push(event.clone(), bytes).is_none());
+    backlog.flush(false, |_, _| {
+        panic!("new connection needs its own preamble")
+    });
+    let mut reconnected = vec![serde_json::json!("status"), serde_json::json!("cfg")];
+    backlog.flush(true, |event, bytes| {
+        assert_eq!(bytes, serde_json::to_vec(&event).unwrap());
+        reconnected.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    });
+    assert_eq!(reconnected[2], serde_json::to_value(event).unwrap());
+}
+
+#[test]
+fn only_real_backlog_overflow_is_lost_and_reports_preserve_original_count() {
     let mut bridge = Bridge::new(config::core_config(&config::defaults()).unwrap(), 0);
-    let (sender, receiver) = std::sync::mpsc::sync_channel(128);
-    let mut bus_losses = bus::Losses::default();
-    let mut offline_losses = bus::Losses::default();
-    for _ in 0..253 {
+    let mut backlog = bus::EventBacklog::default();
+    let mut losses = bus::Losses::default();
+    for _ in 0..35 {
         let event = BusEvent::Line {
             seq: bridge.next_seq(),
             t_us: 0,
@@ -880,43 +928,42 @@ fn boot_burst_losses_coalesce_once_after_channel_and_offline_drain() {
             hpd: None,
             la: None,
         };
-        if sender.try_send(event).is_err() {
-            bus_losses.add(1);
+        let bytes = serde_json::to_vec(&event).unwrap();
+        if let Some(event) = backlog.push(event, bytes) {
+            losses.record(&event);
         }
     }
-    assert_eq!(bus_losses.pending(), 125);
-    for _ in 0..2000 {
-        assert!(!bus_losses.report(&mut bridge, 1, |event| sender.try_send(event).is_ok()));
-        assert_eq!(bridge.seq(), 253);
-    }
-    // Main drains before MQTT connection and counts the original observed events.
-    for event in receiver.try_iter() {
-        offline_losses.record(&event);
-    }
-    assert!(bus_losses.report(&mut bridge, 2, |event| sender.try_send(event).is_ok()));
-    assert_eq!(bridge.seq(), 254);
-    offline_losses.record(&receiver.try_recv().unwrap());
-    assert_eq!(offline_losses.pending(), 253, "not 128 + one report");
-    // No offline report is fed back to the bus owner. After reconnect, transfer
-    // the accumulated real count once, then publish one report on the bus stream.
-    bus_losses.add(offline_losses.pending());
-    offline_losses.clear();
-    let mut reports = Vec::new();
-    assert!(bus_losses.report(&mut bridge, 3, |event| {
-        reports.push(event);
+    assert_eq!(losses.pending(), 3);
+    // A report lost at this boundary represents its original count, not one loss.
+    let mut producer_losses = bus::Losses::default();
+    producer_losses.add(125);
+    assert!(producer_losses.report(&mut bridge, 1, |event| {
+        let bytes = serde_json::to_vec(&event).unwrap();
+        losses.record(&backlog.push(event, bytes).expect("backlog is full"));
         true
     }));
-    assert_eq!(reports.len(), 1);
-    assert!(matches!(
-        reports[0],
-        BusEvent::Err {
-            dropped: Some(253),
-            seq: 255,
-            ..
-        }
-    ));
-    for _ in 0..2000 {
-        assert!(bus_losses.report(&mut bridge, 4, |_| panic!("no recursive report")));
-    }
-    assert_eq!(bridge.seq(), 255);
+    assert_eq!(losses.pending(), 128);
+    backlog.flush(false, |_, _| panic!("still disconnected"));
+    let mut seqs = Vec::new();
+    backlog.flush(true, |event, bytes| {
+        assert_eq!(bytes, serde_json::to_vec(&event).unwrap());
+        let BusEvent::Line { seq, .. } = event else {
+            panic!("retained line")
+        };
+        seqs.push(seq);
+    });
+    assert_eq!(seqs, (1..=32).collect::<Vec<_>>());
+    assert!(losses.report(&mut bridge, 2, |event| {
+        assert!(matches!(
+            event,
+            BusEvent::Err {
+                seq: 37,
+                dropped: Some(128),
+                ..
+            }
+        ));
+        true
+    }));
+    assert_eq!(losses.pending(), 0);
+    assert!(losses.report(&mut bridge, 3, |_| panic!("no recursive overrun")));
 }

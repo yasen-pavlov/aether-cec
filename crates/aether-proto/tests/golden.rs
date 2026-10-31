@@ -427,3 +427,66 @@ fn attempt_diagnostics_round_trip_and_accept_older_telemetry() {
     let parsed: TxCounters = serde_json::from_value(current.clone()).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), current);
 }
+
+#[test]
+fn reset_reasons_are_exact_and_legacy_status_health_remain_readable() {
+    for (reason, spelling) in [
+        (ResetReason::PowerOn, "power_on"),
+        (ResetReason::Software, "software"),
+        (ResetReason::Panic, "panic"),
+        (ResetReason::IntWdt, "int_wdt"),
+        (ResetReason::TaskWdt, "task_wdt"),
+        (ResetReason::Brownout, "brownout"),
+        (ResetReason::Other, "other"),
+    ] {
+        assert_eq!(serde_json::to_value(reason).unwrap(), json!(spelling));
+        let status =
+            json!({"online":true,"boot":4,"reset_reason":spelling,"la":null,"bus":null,"hpd":null});
+        let parsed: Status = serde_json::from_value(status.clone()).unwrap();
+        assert_eq!(parsed.reset_reason, Some(reason));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), status);
+        round_trip::<Status>(&status.to_string());
+        let health = json!({"online":true,"fw":"0.0.0","boot":4,"reset_reason":spelling});
+        let parsed: Healthz = serde_json::from_value(health.clone()).unwrap();
+        assert_eq!(parsed.reset_reason, Some(reason));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), health);
+        round_trip::<Healthz>(&health.to_string());
+    }
+    let legacy: Status = serde_json::from_str(r#"{"online":true,"boot":3}"#).unwrap();
+    assert_eq!(legacy.reset_reason, None);
+    let legacy: Healthz = serde_json::from_str(r#"{"online":true,"fw":"0.0.0","boot":3}"#).unwrap();
+    assert_eq!(legacy.reset_reason, None);
+    let offline: Status = serde_json::from_str(LWT_PAYLOAD).unwrap();
+    assert_eq!(offline.reset_reason, None);
+    assert_eq!(serde_json::to_string(&offline).unwrap(), LWT_PAYLOAD);
+    assert!(serde_json::from_str::<ResetReason>(r#""unknown_future_reason""#).is_err());
+}
+
+#[test]
+fn last_crash_is_optional_bounded_and_round_trips_escaped_text() {
+    let text = "28 pc=40081234 task=cec-bus bt=40081234,400d5678";
+    let status = json!({"online":true,"reset_reason":"panic","last_crash":text,"la":null,"bus":null,"hpd":null});
+    round_trip::<Status>(&status.to_string());
+    let parsed: Status = serde_json::from_value(status.clone()).unwrap();
+    assert_eq!(parsed.last_crash.as_deref(), Some(text));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), status);
+    for text in ["x".repeat(120), "é".repeat(60)] {
+        round_trip::<Status>(&json!({"online":true,"last_crash":text}).to_string());
+    }
+    for text in ["x".repeat(121), "é".repeat(61)] {
+        assert!(
+            serde_json::from_value::<Status>(json!({"online":true,"last_crash":text})).is_err()
+        );
+    }
+    let legacy: Status = serde_json::from_str(r#"{"online":true,"boot":3}"#).unwrap();
+    assert!(legacy.last_crash.is_none());
+    assert!(
+        serde_json::to_value(legacy)
+            .unwrap()
+            .get("last_crash")
+            .is_none()
+    );
+    let offline: Status = serde_json::from_str(LWT_PAYLOAD).unwrap();
+    assert!(offline.last_crash.is_none());
+    assert_eq!(serde_json::to_string(&offline).unwrap(), LWT_PAYLOAD);
+}

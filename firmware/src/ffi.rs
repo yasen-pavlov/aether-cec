@@ -32,6 +32,88 @@ pub fn restart() -> ! {
     unsafe { sys::esp_restart() }
 }
 
+pub fn reset_reason() -> aether_proto::ResetReason {
+    use aether_proto::ResetReason;
+    match unsafe { sys::esp_reset_reason() } {
+        sys::esp_reset_reason_t_ESP_RST_POWERON => ResetReason::PowerOn,
+        sys::esp_reset_reason_t_ESP_RST_SW => ResetReason::Software,
+        sys::esp_reset_reason_t_ESP_RST_PANIC => ResetReason::Panic,
+        sys::esp_reset_reason_t_ESP_RST_INT_WDT => ResetReason::IntWdt,
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => ResetReason::TaskWdt,
+        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => ResetReason::Brownout,
+        _ => ResetReason::Other,
+    }
+}
+
+static LAST_CRASH: std::sync::LazyLock<Option<aether_proto::LastCrash>> =
+    std::sync::LazyLock::new(read_last_crash);
+
+/// First called before console/network startup, after the logger exists. IDF
+/// initializes its panic-time writer during system startup; we only read the
+/// previous boot's ELF dump in normal task context.
+pub fn last_crash() -> Option<&'static aether_proto::LastCrash> {
+    LAST_CRASH.as_ref()
+}
+
+fn read_last_crash() -> Option<aether_proto::LastCrash> {
+    let partition = unsafe {
+        sys::esp_partition_find_first(
+            sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+            sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_DATA_COREDUMP,
+            core::ptr::null(),
+        )
+    };
+    if partition.is_null() {
+        // OTA cannot replace the partition table installed by the bootloader.
+        log::error!("coredump_unavailable_usb_table_required");
+        return None;
+    }
+    let checked = unsafe { sys::esp_core_dump_image_check() };
+    if checked != sys::ESP_OK {
+        if checked != sys::ESP_ERR_NOT_FOUND {
+            log::warn!("coredump_check_failed code={checked}");
+        }
+        return None;
+    }
+    if !matches!(
+        reset_reason(),
+        aether_proto::ResetReason::Panic
+            | aether_proto::ResetReason::IntWdt
+            | aether_proto::ResetReason::TaskWdt
+    ) {
+        // A dump surviving a power cycle is not evidence about this reset.
+        clear_core_dump();
+        return None;
+    }
+    let mut summary = sys::esp_core_dump_summary_t::default();
+    let result = unsafe { sys::esp_core_dump_get_summary(&mut summary) };
+    if result != sys::ESP_OK {
+        log::warn!("coredump_summary_failed code={result}");
+        return None;
+    }
+    let task = summary.exc_task.map(|byte| byte as u8);
+    let bt = &summary.exc_bt_info;
+    let depth = (bt.depth as usize).min(bt.bt.len());
+    let text = aether_logic::status::crash_summary(
+        summary.ex_info.exc_cause,
+        summary.exc_pc,
+        &task,
+        &bt.bt[..depth],
+    );
+    log::error!("last_crash {text}");
+    // Keep the recovered summary in RAM for every status publication this boot.
+    // The flash dump is one-shot; a later crash may replace it.
+    clear_core_dump();
+    Some(text)
+}
+
+fn clear_core_dump() {
+    let result = unsafe { sys::esp_core_dump_image_erase() };
+    if result != sys::ESP_OK {
+        log::warn!("coredump_erase_failed code={result}");
+    }
+}
+
 pub fn install_console_uart() -> Result<(), sys::EspError> {
     use std::io::Write;
     // Drain Rust's line buffer and newlib's early-log buffers before changing

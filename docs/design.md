@@ -326,7 +326,7 @@ Wi-Fi and the `EspMqttClient` handle. The core-1 bus task owns runtime power
 and the single boxed `cec_core::bridge::Bridge`. Main polls Wi-Fi reconnection
 every five seconds after a disconnect and
 runs MQTT and HTTP command effects serially through the same `apply_plan`. SDK defaults are resolved via the absolute
-Cargo-relative `ESP_IDF_SDKCONFIG_DEFAULTS`; firmware builds stay in-tree.
+Cargo-relative `ESP_IDF_SDKCONFIG_DEFAULTS`, including out-of-tree worker targets.
 There is no SNTP client: certificate chain/hostname validation is enabled but
 validity dates are not checked (`CONFIG_MBEDTLS_HAVE_TIME_DATE` unset), avoiding
 a hard NTP dependency. Protocol time always uses the monotonic ESP timer.
@@ -375,17 +375,25 @@ the effective value is replaced or acknowledged. Node/topics and GPIO wiring
 take effect only after restart. Power is in-memory only and survives cfg changes.
 The MQTT log topic is intentionally absent; cfg.log is stored but inert.
 
-Bus events observed while MQTT is disconnected are still sent to SSE, counted as
-dropped and summarized after reconnect; they are not queued ahead of retained
-status/config on a new connection. Main drains the bus channel on every turn,
-even without MQTT credentials. Start the bus task only after the network and HTTP
-constructors complete, so no producer fills the channel while main is still
-initializing those services; HTTP's initial snapshot is unmeasured until then.
+Main owns `bus::EventBacklog`, a preallocated 32-event drop-newest FIFO for
+MQTT-offline events. SSE receives each event immediately, exactly once. After a
+connection's retained status and cfg both enqueue successfully, main flushes
+the backlog in original sequence/timestamp order before newer bus traffic.
+The FIFO moves the already-serialized SSE bytes alongside each event, avoiding
+another allocation/serialization at reconnect; connected traffic bypasses it.
+Readiness is gated on the current connection generation, not merely the atomic
+connected flag; a failed preamble retries without releasing the FIFO. Only real
+FIFO overflow is transferred to `bus::Losses`; offline time alone is not loss.
+Main drains the bus channel every turn, even without MQTT credentials. Start the
+bus task after network/HTTP constructors, immediately before this drain loop.
 
 The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
 0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at
-0x20000 and 0x200000. Remaining 0x20000 bytes are an unused `storage` NVS
-partition. Flash with this table and the IDF-built rollback-enabled bootloader,
+0x20000 and 0x200000. The final 0x20000 bytes are split into a 64-KiB `coredump`
+partition (data/coredump, 0x3E0000) and unused 64-KiB `storage` NVS (0x3F0000).
+Existing NVS, otadata, phy_init and OTA offsets/sizes are unchanged. A one-time USB
+flash must install the new table; application OTA cannot change it.
+Flash with this table and the IDF-built rollback-enabled bootloader,
 not espflash defaults. Boot kind comes from the bootloader's running partition
 state before fallible startup: only PENDING_VERIFY requires confirmation.
 Non-OTA/USB boots are already valid, including the bootloader's blank-otadata
@@ -393,10 +401,35 @@ initialization; there is no provisioning-confirmation path.
 Cargo's `ESP_IDF_GLOB_AETHER_*` settings stage and track `partitions.csv` in the
 generated esp-idf-sys project, where IDF resolves the custom CSV filename.
 
+Crash diagnostics use IDF's supported flash ELF core dump writer with CRC32 and
+an independent 2048-byte panic stack, not a custom exception/abort hook. After
+installing the log ring and before console/network startup, `ffi::last_crash()`
+checks partition presence and `esp_core_dump_image_check()`. For panic, interrupt
+WDT or task WDT resets it calls `esp_core_dump_get_summary()`, formats EXCCAUSE,
+PC, task name and up to eight backtrace PCs, logs `last_crash <text>` at error
+level and erases the consumed dump with `esp_core_dump_image_erase()`. A valid
+dump on another reset cause is cleared without attributing it to that boot.
+Read/check/erase errors are static application codes with numeric IDF errors;
+an absent partition emits `coredump_unavailable_usb_table_required`.
+`Status.last_crash: Option<LastCrash>` is additive, where
+`LastCrash = heapless::String<120>`; `status::Snapshot.last_crash` borrows it.
+The summary stays in RAM for all status/HTTP publications that boot, independent
+of the flash erase. The allocation-free host-tested
+`status::crash_summary(u32, u32, &[u8], &[u32]) -> LastCrash` caps/scrubs the
+16-byte task name, takes at most eight PCs and fits even maximal values in
+119 bytes. No existing function signatures or core CEC APIs change.
+The prior Rust/NVS panic hook remains useful for Rust panics; it cannot catch
+CPU exceptions or IDF aborts. No RTC fallback is installed: IDF 5.4.2 exposes no
+supported application hook in its panic path (see the linked source rationale
+in README). Full DRAM capture stays disabled, but IDF still records task stacks;
+a dump exceeding 64 KiB or a fault inside panic handling may leave no valid
+summary. Actual exception capture and partition rollout need the lead's USB
+bench test; build/host tests do not demonstrate crash persistence.
+
 ### CEC bus executor (phase 3)
 
 `firmware/src/cec/mod.rs` owns Decoder, Tx, boxed Bridge and all bus policy in
-`cec-bus`: 12288-byte stack, priority 22, pinned to core 1. Its unsafe hardware
+`cec-bus`: 12288-byte stack, priority 20, pinned to core 1. Its unsafe hardware
 boundary is `firmware/src/cec/hardware.rs`, imported under `ffi::cec`.
 Main sends bounded FIFO commands (64 slots) and receives ordered proto events
 (128 slots), never waits for bus completion, and leaves MQTT/SSE on main.
@@ -407,22 +440,58 @@ the task immediately. Read-only counters/status use a short snapshot mutex:
 the bus owner only `try_lock`s, so network work cannot block CEC.
 
 GPIO is input/output open-drain with no internal pull resistors; external sink
-pull-up is required. The GPIO ISR service is installed from core 1, IRAM,
-level 3, both edges. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
+pull-up is required. GPIO/RMT resources and their interrupts are initialized on
+main/core 0; `Hardware::arm` binds the bus task's notification handle before
+enabling edges. The GPIO ISR is IRAM, level 3. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
 and release/acquire indices, preserving full 64-bit ESP timer timestamps.
 Drop-newest edge overruns increment telemetry `rx.errors` and reset decoding;
 they are not counted as lost bus events. Event-channel/outbox losses accumulate
 separately as `err kind:overrun dropped:N`. The host-tested `bus::Losses`
 accumulator retains the true count across failed report enqueues; retrying a
 report neither adds a loss nor consumes a sequence. Its next sequence is committed
-only after enqueue. Offline MQTT loss reports retain their original dropped count
-and are not transferred back to the bus owner until connected, avoiding recursive
-one-loss reports.
+only after enqueue. MQTT pending losses are not transferred to the bus owner until
+the current connection's preamble is ready. An overflowing backlog report retains
+its original dropped count rather than turning into a recursive one-loss report.
 The IRAM ISR and ISR-dispatched sample/ACK-release timers perform no allocation,
 logging, serialization or network calls. Timer interrupts are pinned to core 1.
 IDF 5.4.2 requires `ESP_TIMER_SHOW_EXPERIMENTAL` to make the CPU1 affinity
 choices effective; generated bindings were checked for both CPU1 choices.
 The release also enables `RMT_ISR_IRAM_SAFE` and GPIO control in IRAM.
+IDF 5.4.2 `esp_timer.c:180-210,294-342,371-387,465-494` marks start_once,
+list/lock helpers and ISR dispatch IRAM unconditionally; there is no
+`ESP_TIMER_IN_IRAM` switch in this IDF. `esp_timer_impl_lac.c:95-133` keeps
+time reads/alarm updates in IRAM, and timer objects use internal-capability
+allocation (`esp_timer.c:110`). Boxed ISR context/rings and RMT symbol buffers
+are internal DRAM on the PSRAM-less WROOM; ACK guards/timing constants inline
+as arithmetic/immediates. Compile-time guards require GPIO control in IRAM,
+RMT ISR safety and timer ISR dispatch, preventing a cache-unsafe configuration.
+
+The bus task subscribes itself to the task watchdog at entry to `run`, before
+reconfiguring it to monitor only IDLE0 plus the bus task (`idle_core_mask=1`,
+timeout 5 s, panic enabled). Reconfiguration removes IDLE1's hook/subscription
+together; merely deleting IDLE1 would leave its hook trying to feed an unwatched
+task. The bus feeds once per loop iteration, so a wedged owner still trips the
+watchdog. IDLE0 and the interrupt watchdog remain monitored. A continuously active
+priority-20 CEC task legitimately owns core 1 and must not depend on IDLE1 getting
+scheduled. Between frames with no active Decoder/Tx/follower ACK it still uses
+`vTaskDelay(1)` to share the core; active TX samples/chaining and ACK arming never
+receive that delay. Status and Healthz retain the typed `esp_reset_reason()`
+report; the bench observed `task_wdt` after failed uploads, followed by `panic`.
+
+During flash operations IDF 5.4.2 suspends both schedulers, parks the other CPU in
+an IRAM IPC loop and disables both flash caches (`spi_flash/cache_utils.c:114-147,
+150-217`); IRAM interrupts still run. Backlogged edges plus the priority-20 bus
+loop can starve IDLE1 between cache-off intervals. The upload's `Shared.busy`
+is an `Arc<AtomicBool>` shared directly with the bus task and GPIO ISR, avoiding
+main-loop mirroring latency. On every upload iteration the bus releases RMT and
+any follower ACK, clears ACK membership, cancels only the active TX with a
+correlated Busy completion, drains/decodes RX, updates snapshots and blocks with
+`vTaskDelay(2)` regardless of Decoder activity. The ISR also refuses an ACK arm
+when busy. Commands and unstarted requests remain queued; no new TX launches.
+On failure the handler clears busy and normal service resumes. On success busy
+stays set until reboot. The bus explicitly reports upload quiescence only after
+it observes suspension and detached RMT work finishes; queued work does not
+prevent the reboot. No core Rust API signatures change.
 
 On EOM rise Decoder emits AckDue; the task arms a predicted-time window. The
 actual following falling-edge ISR asserts GPIO low immediately, then starts an
@@ -499,13 +568,14 @@ Bus health starts unknown, becomes ok on a valid frame or one second of high
 idle, reports boot low with no edges after 100 ms as no_pullup, and reports later
 sustained low/recovery as stuck_low/ok. Main republishes retained status on
 health/LA changes. HPD stays null; EDID and the MQTT log topic remain deferred.
-OTA's post-response reboot additionally requires no pending bus commands,
-queued host requests, active waveform or follower ACK.
+OTA's post-response reboot requires the bus owner's explicit upload-quiescent
+signal: no active waveform or follower ACK. Commands and queued host requests
+are intentionally retained, not drained into transmissions during the upload.
 
 ### HTTP ownership, SSE and log capture (phase 2b)
 
 `EspHttpServer` listens on port 80 with `max_open_sockets=4`,
-`lru_purge_enable=true`, a 12288-byte httpd stack and 1024-byte maximum request
+`lru_purge_enable=true`, a 16384-byte httpd stack and 1024-byte maximum request
 headers. Its exact method/path table is `aether_logic::http::route`; wildcard
 handlers return JSON `not_found` for unknown paths. The embedded `index.html`
 includes its CSS/vanilla JS; no assets, dependencies or build step are needed.
@@ -537,9 +607,10 @@ then topic-suffix `event:` / exact serialized JSON `data:` chunks and a keep-ali
 comment every 15 seconds. IDF's bounded send timeout handles stuck sockets.
 Workers complete the async request and trigger socket closure on disconnect or
 overflow. A shared alive flag reclaims subscriptions even during an idle bus.
-`MqttLink::publish` is the single fan-out point for bus/status/ota; without a
-configured MQTT link, main uses the identical hub directly. The MQTT callback
-never invokes SSE or blocks on a connection.
+Main fans bus events directly to the hub before buffering for MQTT, so replay
+never duplicates SSE. `MqttLink::publish` fans out status/ota; without a configured
+MQTT link, main uses the identical hub directly. The MQTT callback never invokes
+SSE or blocks on a connection.
 
 The application `log::Log` wrapper forwards only scrubbed application targets
 to EspLogger, and captures info/warn/error into `aether_logic::http::LogRing`
@@ -558,9 +629,11 @@ and Health are exempt, and every other route uses the full-token XOR comparison.
 ### Push OTA and boot confirmation
 
 The HTTP upload handler runs synchronously on httpd, not main. It checks the
-running partition's PENDING_VERIFY state before reserving an atomic busy flag,
-rejecting with `409 busy` before allocating an id. A second streaming upload waits
-in httpd's accept backlog; busy covers an accepted upload awaiting reboot.
+running partition's PENDING_VERIFY state before reserving the shared atomic busy
+flag, rejecting with `409 busy` before allocating an id. The same flag suspends
+CEC transmission/ACK for the whole upload and, on success, until reboot; failure
+clears it. A second streaming upload waits in httpd's accept backlog; busy covers
+an accepted upload awaiting reboot.
 The handler validates nonzero Content-Length and X-Sha256 against the actual
 inactive slot size, obtains a durable monotonic `o-N` id, and streams through
 `EspOta` in at most 4-KiB chunks while hashing with `sha2` (default features
@@ -575,7 +648,8 @@ without activating its slot. The Rust app descriptor explicitly names `aether`;
 The pending `{id,slot}` record is persisted in NVS namespace `ota` before selecting
 the partition, so a power cut never produces an untracked update. A failed
 complete clears that record. After full verification the handler sends 202
-`OtaAccepted`; main reboots at least 500 ms later and only after the bus is idle.
+`OtaAccepted`; main reboots at least 500 ms later, after upload quiescence,
+without requiring deliberately suspended queues to empty.
 
 `Health::new()` queries `esp_ota_get_state_partition(esp_ota_get_running_partition())`
 before anything fallible. Only PENDING_VERIFY sets `BootKind::Pending`; the NVS

@@ -102,7 +102,7 @@ Subscribes `aether/<node>/tx` and `aether/<node>/cmd/+`.
 ## 3. `status` (retained; LWT)
 
 ```json
-{"online":true,"v":1,"fw":"0.1.0","boot":3,"t_us":1234567,
+{"online":true,"v":1,"fw":"0.1.0","boot":3,"reset_reason":"software","t_us":1234567,
  "la":0,"pa":"0.0.0.0","type":"tv","ip":"192.0.2.66","rssi":-58,
  "bus":"ok","hpd":null}
 ```
@@ -113,12 +113,21 @@ Subscribes `aether/<node>/tx` and `aether/<node>/cmd/+`.
 | `v` | u32 | protocol schema version; host refuses `v` it doesn't know |
 | `fw` | string | firmware semver (+ `-dirty` / git short sha in dev builds) |
 | `boot` | u32 | boot counter from NVS; changes on every reset. `t_us` and `seq` restart at 0 with it |
+| `reset_reason` | string | Cause of this boot from `esp_reset_reason()`: `power_on`, `software`, `panic`, `int_wdt`, `task_wdt`, `brownout`, or `other` (all remaining IDF causes). New firmware always includes it online and in `/healthz`; older payloads may omit it. The minimal LWT remains unchanged |
+| `last_crash` | string ≤ 120 UTF-8 bytes, optional | Previous boot's valid ESP-IDF ELF core dump, recovered only after `panic`, `int_wdt` or `task_wdt`: `"<decimal EXCCAUSE> pc=<8 hex> task=<name> bt=<up to 8 comma-separated 8-hex PCs>"`. Names are at most 16 printable non-whitespace ASCII bytes. PCs are symbolised on the host against the crashing image's ELF. Omitted when unavailable; stays present for the current boot after the stored dump is cleared. Requires the coredump partition installed by USB; OTA cannot add that partition. The minimal LWT remains unchanged |
 | `t_us` | u64 | µs since boot (`esp_timer_get_time()`), monotonic, no wall clock on device |
 | `la` | u8 \| null | logical address in use; `null` while allocating |
 | `pa` | string | physical address `a.b.c.d` |
 | `type` | string | CEC device type: `tv`, `playback`, `audio`, `recorder`, `tuner` |
 | `bus` | string \| null | `ok` \| `stuck_low` (line low > 100 ms with no valid frame) \| `no_pullup` (line reads low at boot); `null` = not measured (phase 2 publishes `null`) |
 | `hpd` | bool \| null | HPD input level if an HPD GPIO is configured, else `null` |
+
+Before MQTT is ready, main retains up to 32 bus events (oldest first) without
+changing their sequence or timestamp. On each connection it queues retained
+`status`, then `cfg`, then flushes this FIFO before newer bus events. SSE receives
+events immediately and does not replay them on MQTT reconnect. Only FIFO overflow
+(drop newest), event-channel overflow, or actual MQTT enqueue/expiry failures
+count as lost events; merely being disconnected does not.
 
 Choregos mapping: `online:true` → `Event::BridgeOnline` (triggers `resync()`); `online:false` →
 `Event::BridgeOffline`. A `boot` change without an intervening `online:false` (retained message lost
@@ -224,7 +233,7 @@ discards data-width pulses; after a decoding failure emit at most one `err` unti
 | `nack` | a block was not acknowledged on the final attempt; earlier blocks of that attempt may have been acked | `ack:false`, counts toward `standby_target_absent` |
 | `arb_lost` | lost arbitration in the header on the final attempt (another initiator won; its frame appears as `rx`) | `ack:false`, does **not** count as NACK |
 | `line_error` | expected line level or sample deadline missed on the final attempt (collision / bus fault / executor delay) | `ack:false`, does not count as NACK |
-| `busy` | request queue full or bus continuously busy for > 2 s | `ack:false`, does not count as NACK |
+| `busy` | request queue full, bus continuously busy for > 2 s, or an active request interrupted by an OTA upload (§9) | `ack:false`, does not count as NACK |
 | `rejected` | request validation failed | adapter logs error; no `SendResult` |
 
 One `tx` event per request, after the final attempt. Intermediate attempts are not individually
@@ -419,8 +428,16 @@ from its running slot. This record never decides whether the running image is pe
 Rules: `X-Sha256` header mandatory and checked before the slot is activated; image must be an
 esp-idf app image for the same project name. OTA is refused (`409 busy`) while the running image
 is still pending verification or an accepted upload is awaiting reboot, before allocating a
-new id. Streaming concurrency is described in §11; a CEC `tx` in flight is allowed to finish
-before the reboot. There is no MQTT `cmd/ota`.
+new id. There is no MQTT `cmd/ota`.
+
+During an upload the bridge does not transmit or acknowledge; frames addressed
+to it are NACKed for roughly 15 s (the upload duration, not a fixed timeout).
+Any in-progress `tx` is aborted/released and receives its correlated `busy`
+outcome, with `t_us` at interruption and no `attempts`; unstarted requests stay
+queued. Receive edges are still drained/decoded, but flash cache stalls may lose
+edges/frames; this is not a gap-free capture mode. A failed upload resumes normal
+CEC operation. A successful upload stays passive through the response/reboot
+grace; reboot waits for the released hardware, not for suspended queues to empty.
 
 ## 10. Provisioning (out of band — recorded here so the contract is complete)
 
@@ -447,7 +464,7 @@ credentials never overwrites the credentials blob. Console `show token` prints i
 | Method | Path | Body / response |
 |---|---|---|
 | `GET` | `/` | web UI (one HTML, one CSS, vanilla JS; no build step) |
-| `GET` | `/healthz` | `{"online":true,"fw":…,"boot":…}` — unauthenticated, for monitoring |
+| `GET` | `/healthz` | `{"online":true,"fw":…,"boot":…,"reset_reason":"software"}` — unauthenticated, for monitoring; reset cause uses §3's vocabulary |
 | `GET` | `/api/status` | §3 object |
 | `GET` | `/api/cfg` | §7 object |
 | `PUT` | `/api/cfg` | partial §7 object → `cmd/result`-shaped reply, same validation as `cmd/cfg` |

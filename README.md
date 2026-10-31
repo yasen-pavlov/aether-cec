@@ -58,7 +58,8 @@ main stack must be 32768, flash 4 MB, custom partition table enabled and
 bootloader rollback enabled.
 
 `partitions.csv` reserves two 0x1E0000-byte OTA slots, NVS at 0x9000,
-otadata at 0xF000, phy_init at 0x11000 and unused future `storage` NVS.
+otadata at 0xF000, phy_init at 0x11000, a 64-KiB `coredump` data partition at
+0x3E0000 and unused 64-KiB `storage` NVS at 0x3F0000.
 Pass the custom table and the **IDF-built rollback bootloader on every USB flash**;
 espflash's defaults do not provide this OTA layout. Erasing all flash is necessary
 once when replacing Tasmota because its NVS/otadata overlap these offsets and
@@ -121,6 +122,64 @@ are rejected. Config/state changes are handed off without blocking main.
 `edid_unsupported` because the GPIO contract has no DDC pins. MQTT ingress remains
 bounded to 32 messages / 2048 bytes; the bus task uses bounded command/event queues
 and reports ring/event/outbox loss through ordered overrun errors.
+
+## Crash diagnostics and host symbolisation
+
+Firmware enables ESP-IDF 5.4.2's flash **ELF core dumps with CRC32** and a
+dedicated 2048-byte panic stack. On a `panic`, `int_wdt` or `task_wdt` boot,
+it validates the saved image, reads its summary and emits error-level
+`last_crash <text>` into `/api/log`. The same text is retained as optional
+`status.last_crash` (MQTT and `/api/status`) for that boot, then the flash dump
+is erased. Format: decimal Xtensa EXCCAUSE, `pc=<8 hex>`, `task=<up to 16
+printable non-whitespace ASCII bytes>`, `bt=<up to 8 comma-separated 8-hex PCs>`.
+An abort may show an instruction exception; symbolise its PC/backtrace to
+identify the IDF abort caller. The existing `last_panic` NVS hook still reports
+Rust panics, but is not a CPU-exception or IDF-abort hook.
+
+**One USB flash with the updated `firmware/partitions.csv` is required.**
+The old table has only `storage` at 0x3E0000/128 KiB. This table splits it into
+`coredump` at 0x3E0000/64 KiB and unused `storage` at 0x3F0000/64 KiB without
+moving/resizing NVS, otadata, phy_init or either application slot. Use the USB
+command above with the custom table and matching IDF bootloader; do not erase
+the whole flash or lose provisioning on this routine update. Application OTA
+does **not** rewrite the partition table at 0x8000: an OTA-only installation on
+the old table logs `coredump_unavailable_usb_table_required` and cannot capture
+these crashes. Once the table is installed, subsequent normal OTA updates can
+capture/recover dumps. The recovering image must also include this code; an
+older rollback image will not publish `last_crash`.
+
+There is deliberately no RTC-memory fallback based on an unsupported panic hook:
+IDF 5.4.2's [port panic handler](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/port/panic_handler.c#L263-L267)
+calls the [system handler directly](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/panic.c#L287-L419),
+whose `panic_print_*` functions are internal, not registered application hooks.
+[Shutdown handlers](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/esp_system.c#L23-L64)
+run from ordinary `esp_restart()`, not panic restart.
+The supported handler [calls `esp_core_dump_write`](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/panic.c#L409-L419);
+IDF's [flash writer switches to its non-OS flash guard](https://github.com/espressif/esp-idf/blob/v5.4.2/components/espcoredump/src/core_dump_flash.c#L89-L127)
+for the panic-time write rather than calling application/NVS code with caches
+disabled. The [public API](https://github.com/espressif/esp-idf/blob/v5.4.2/components/espcoredump/include/esp_core_dump.h#L93-L172)
+provides image integrity checking, summary retrieval and erasure.
+
+Keep the **ELF for the image that crashed**, not just the currently running one
+(especially after OTA rollback). For source lines and inlined Rust frames build
+with `CARGO_PROFILE_RELEASE_DEBUG=true`; retain that ELF alongside its image.
+From the repository root, substitute the `pc` and `bt` addresses from the report
+(split commas into separate arguments):
+
+```sh
+. "$HOME/.espup-export.sh"
+xtensa-esp32-elf-addr2line -pfiaC \
+  -e firmware/target/xtensa-esp32-espidf/release/aether \
+  0x40081234 0x400d5678
+```
+
+For an external `CARGO_TARGET_DIR`, point `-e` at that target directory's
+`xtensa-esp32-espidf/release/aether` instead. These addresses are illustrative.
+A saved dump larger than 64 KiB is rejected by IDF; corrupted task stacks,
+double faults during panic handling, power loss and reset causes outside the
+panic path can leave no valid summary. Full DRAM/heap capture is disabled.
+Reading the summary is one-shot: export the log/status before another reset;
+this is diagnostics, not a fix or proof of resolution of the OTA crash.
 
 ## HTTP API, token and push OTA
 

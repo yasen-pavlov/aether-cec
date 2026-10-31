@@ -229,9 +229,11 @@ fn tx_rejections_use_shared_sequence_and_preserve_fields() {
 #[test]
 fn status_and_telemetry_exact_fields() {
     let cfg = config::defaults();
-    let snapshot = status::Snapshot {
+    let mut snapshot = status::Snapshot {
         fw: "0.0.0+abc",
         boot: 3,
+        reset_reason: aether_proto::ResetReason::Software,
+        last_crash: None,
         t_us: 123,
         ip: "192.0.2.2",
         rssi: -58,
@@ -244,7 +246,15 @@ fn status_and_telemetry_exact_fields() {
     let online = serde_json::to_value(status::online(&cfg, &snapshot)).unwrap();
     assert_eq!(
         online,
-        json!({"online":true,"v":1,"fw":"0.0.0+abc","boot":3,"t_us":123,"la":null,"pa":"0.0.0.0","type":"tv","ip":"192.0.2.2","rssi":-58,"bus":null,"hpd":null})
+        json!({"online":true,"v":1,"fw":"0.0.0+abc","boot":3,"reset_reason":"software","t_us":123,"la":null,"pa":"0.0.0.0","type":"tv","ip":"192.0.2.2","rssi":-58,"bus":null,"hpd":null})
+    );
+    let crash = status::crash_summary(28, 0x4008_1234, b"cec-bus\0", &[0x4008_1234, 0x400d_5678]);
+    snapshot.last_crash = Some(&crash);
+    let crashed = status::online(&cfg, &snapshot);
+    assert_eq!(crashed.last_crash.as_ref(), Some(&crash));
+    assert_eq!(
+        serde_json::to_value(crashed).unwrap()["last_crash"],
+        "28 pc=40081234 task=cec-bus bt=40081234,400d5678"
     );
     let telemetry = serde_json::to_value(status::telemetry(&snapshot)).unwrap();
     assert_eq!(telemetry["heap_free"], 1000);
@@ -269,4 +279,16 @@ fn status_and_telemetry_exact_fields() {
     assert_eq!(telemetry["tx"]["busy"], 0);
     assert_eq!(telemetry["tx"]["rejected"], 0);
     assert_eq!(telemetry["tx"]["retransmits"], 0);
+}
+
+#[test]
+fn crash_summary_bounds_and_scrubs_task_names() {
+    let full = status::crash_summary(u32::MAX, u32::MAX, b"abcdefghijklmnopTAIL", &[u32::MAX; 16]);
+    assert_eq!(
+        full.as_str(),
+        "4294967295 pc=ffffffff task=abcdefghijklmnop bt=ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff,ffffffff"
+    );
+    assert_eq!(full.len(), 119);
+    let scrubbed = status::crash_summary(0, 0, b"bus\n\xff \0ignored", &[]);
+    assert_eq!(scrubbed.as_str(), "0 pc=00000000 task=bus??? bt=");
 }

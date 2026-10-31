@@ -13,6 +13,9 @@ fn main() {
         "esp_idf_idf_target_linux",
         "esp_idf_app_build_type_pure_ram_app",
         "esp_idf_version_patch_at_least_5_3_2",
+        "esp_idf_gpio_ctrl_func_in_iram",
+        "esp_idf_rmt_isr_iram_safe",
+        "esp_idf_esp_timer_supports_isr_dispatch_method",
     ] {
         println!("cargo:rustc-check-cfg=cfg({name})");
     }

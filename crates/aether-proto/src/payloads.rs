@@ -16,6 +16,29 @@ pub enum BusState {
     NoPullup,
 }
 
+/// Hardware reset cause, grouped independently of ESP-IDF's numeric values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetReason {
+    /// Initial application of power.
+    PowerOn,
+    /// Explicit software restart.
+    Software,
+    /// CPU exception or panic.
+    Panic,
+    /// Interrupt watchdog.
+    IntWdt,
+    /// Task watchdog.
+    TaskWdt,
+    /// Supply voltage fell below the brownout threshold.
+    Brownout,
+    /// Any other or unknown reset cause.
+    Other,
+}
+
+/// Bounded previous-boot exception summary; addresses are symbolised on the host.
+pub type LastCrash = String<120>;
+
 /// Retained status. Only `online` is present in the offline/LWT payload.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Status {
@@ -30,6 +53,12 @@ pub struct Status {
     /// Persistent boot counter.
     #[serde(default)]
     pub boot: Option<u32>,
+    /// Cause of this boot; absent in older status payloads and the LWT.
+    #[serde(default)]
+    pub reset_reason: Option<ResetReason>,
+    /// Previous panic/watchdog core dump, if recovered on this boot.
+    #[serde(default)]
+    pub last_crash: Option<LastCrash>,
     /// Monotonic microseconds since boot.
     #[serde(default)]
     pub t_us: Option<u64>,
@@ -69,6 +98,12 @@ impl Serialize for Status {
         }
         if let Some(value) = self.boot {
             object.serialize_entry("boot", &value)?;
+        }
+        if let Some(value) = self.reset_reason {
+            object.serialize_entry("reset_reason", &value)?;
+        }
+        if let Some(value) = &self.last_crash {
+            object.serialize_entry("last_crash", value)?;
         }
         if let Some(value) = self.t_us {
             object.serialize_entry("t_us", &value)?;
@@ -458,6 +493,9 @@ pub struct Healthz {
     pub fw: String<24>,
     /// Persistent boot count.
     pub boot: u32,
+    /// Cause of this boot; absent when reading older firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_reason: Option<ResetReason>,
 }
 
 /// Uniform HTTP error body.

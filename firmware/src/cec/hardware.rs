@@ -8,10 +8,22 @@ use cec_core::{
 use esp_idf_svc::sys;
 use std::{
     mem::ManuallyDrop,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 
+#[cfg(not(all(
+    esp_idf_gpio_ctrl_func_in_iram,
+    esp_idf_rmt_isr_iram_safe,
+    esp_idf_esp_timer_supports_isr_dispatch_method
+)))]
+compile_error!("CEC interrupts require GPIO/RMT IRAM safety and esp_timer ISR dispatch");
+
 pub struct Interrupts {
+    // ESP32-WROOM has no PSRAM: this boxed context and both rings are internal
+    // DRAM. ISR helpers inline; timing constants are immediates, not flash data.
     pub edges: EdgeRing<256>,
     pub samples: EdgeRing<8>,
     pin: i32,
@@ -19,6 +31,7 @@ pub struct Interrupts {
     ack_at_low: AtomicU32,
     ack_at_high: AtomicU32,
     in_flight: AtomicU32,
+    ota_busy: Arc<AtomicBool>,
     ack_armed: AtomicBool,
     ack_active: AtomicBool,
     ack_count: AtomicU32,
@@ -68,11 +81,13 @@ unsafe extern "C" fn edge_isr(arg: *mut core::ffi::c_void) {
     if level == Level::Low && context.ack_armed.swap(false, Ordering::AcqRel) {
         let at = u64::from(context.ack_at_low.load(Ordering::Relaxed))
             | (u64::from(context.ack_at_high.load(Ordering::Relaxed)) << 32);
-        if ack_in_window(now, at) {
+        if !context.ota_busy.load(Ordering::Acquire) && ack_in_window(now, at) {
             unsafe {
                 sys::gpio_set_level(context.pin, 0);
             }
             context.ack_active.store(true, Ordering::Release);
+            // IDF 5.4.2 esp_timer.c:180/294/376 places start_once, insertion
+            // and locking in IRAM unconditionally; no ESP_TIMER_IN_IRAM exists.
             if unsafe { sys::esp_timer_start_once(context.ack_release, u64::from(timing::ACK_LOW)) }
                 != sys::ESP_OK
             {
@@ -160,6 +175,26 @@ pub fn spawn_bus(run: impl FnOnce() + Send + 'static) -> crate::config::Result<(
     Ok(())
 }
 
+/// Protect the bus before removing only core 1's idle watchdog requirement.
+/// Reconfigure also removes IDF's idle hook; deleting IDLE1 alone leaves it
+/// repeatedly trying to reset an unsubscribed task.
+pub fn watch_bus() -> crate::config::Result<()> {
+    unsafe {
+        sys::esp!(sys::esp_task_wdt_add(core::ptr::null_mut()))?;
+        let cfg = sys::esp_task_wdt_config_t {
+            timeout_ms: 5000,
+            idle_core_mask: 1,
+            trigger_panic: true,
+        };
+        sys::esp!(sys::esp_task_wdt_reconfigure(&cfg))?;
+    }
+    Ok(())
+}
+
+pub fn feed_bus() {
+    unsafe { sys::esp!(sys::esp_task_wdt_reset()) }.expect("cec_watchdog_reset_failed");
+}
+
 pub struct Hardware {
     pub interrupts: ManuallyDrop<Box<Interrupts>>,
     channel: sys::rmt_channel_handle_t,
@@ -175,8 +210,8 @@ pub struct Hardware {
 // on main; esp-idf driver handles are not core-affine.
 unsafe impl Send for Hardware {}
 impl Hardware {
-    /// Called on core 1, so GPIO and RMT interrupt allocation is on core 1.
-    pub fn new(pin: u8) -> crate::config::Result<Self> {
+    /// Construct on main/core 0; move the handles into the core-1 bus task.
+    pub fn new(pin: u8, ota_busy: Arc<AtomicBool>) -> crate::config::Result<Self> {
         let pin = i32::from(pin);
         let mut hw = Self {
             interrupts: ManuallyDrop::new(Box::new(Interrupts {
@@ -187,6 +222,7 @@ impl Hardware {
                 ack_at_low: AtomicU32::new(0),
                 ack_at_high: AtomicU32::new(0),
                 in_flight: AtomicU32::new(0),
+                ota_busy,
                 ack_armed: AtomicBool::new(false),
                 ack_active: AtomicBool::new(false),
                 ack_count: AtomicU32::new(0),
@@ -416,6 +452,20 @@ impl Hardware {
         }
         while self.interrupts.samples.pop().is_some() {}
     }
+    /// OTA is passive, including an ACK armed before the upload began.
+    pub fn suspend(&mut self) {
+        self.interrupts.ack_armed.store(false, Ordering::Release);
+        self.abort();
+        unsafe {
+            sys::esp_timer_stop(self.interrupts.ack_release);
+            sys::gpio_set_level(self.interrupts.pin, 1);
+        }
+        self.interrupts.ack_active.store(false, Ordering::Release);
+    }
+
+    pub fn upload_wait(&self) {
+        unsafe { sys::vTaskDelay(2) };
+    }
     fn release(&mut self) {
         if self.routed {
             unsafe {
@@ -443,6 +493,11 @@ impl Hardware {
         } else {
             false
         }
+    }
+    /// A real one-tick block shares the core during quiet periods even when
+    /// notifications would return immediately. Never delay ACK arming/TX samples.
+    pub fn idle_wait(&self) {
+        unsafe { sys::vTaskDelay(1) };
     }
     /// Sleep on ISR notifications; a 1-ms timeout guarantees decoder polling at
     /// >=200 Hz even on an entirely quiet bus. Short TX waits use an ISR timer.

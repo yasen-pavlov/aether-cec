@@ -1,5 +1,5 @@
 use crate::{config::Result, secrets::Mqtt};
-use aether_logic::bus::Losses;
+use aether_logic::bus::{EventBacklog, Losses};
 use aether_proto::{LWT_PAYLOAD, Topics};
 use esp_idf_svc::{
     mqtt::client::{
@@ -50,6 +50,7 @@ pub struct MqttLink {
     control: Arc<Control>,
     pending_overrun: Losses,
     enqueue_recovered: bool,
+    bus_generation: u32,
 }
 impl MqttLink {
     pub fn new(node: &aether_proto::Node, credentials: &Mqtt) -> Result<Self> {
@@ -157,6 +158,7 @@ impl MqttLink {
             control,
             pending_overrun: Losses::default(),
             enqueue_recovered: false,
+            bus_generation: 0,
         })
     }
     pub fn connected(&self) -> bool {
@@ -192,14 +194,37 @@ impl MqttLink {
     pub fn status_published(&self) -> bool {
         self.connected() && self.control.status_acked.load(Ordering::Acquire)
     }
+    /// Do not release the offline FIFO until both retained messages were queued.
+    pub fn bus_preamble(&mut self, status: bool, cfg: bool) {
+        if status && cfg {
+            self.bus_generation = self.connects;
+        }
+    }
+    pub fn bus_ready(&self) -> bool {
+        self.connected()
+            && self.bus_generation != 0
+            && self.bus_generation == self.control.connects.load(Ordering::Acquire)
+    }
+    pub fn lose_bus_event(&mut self, event: &aether_proto::BusEvent) {
+        let dropped = self.pending_overrun.record(event);
+        self.dropped = self.dropped.saturating_add(u64::from(dropped));
+    }
+    pub fn flush_bus(&mut self, node: &aether_proto::Node, backlog: &mut EventBacklog) {
+        backlog.flush(self.bus_ready(), |event, bytes| {
+            self.bus_event(node, &event, &bytes);
+        });
+    }
     pub fn publish(&mut self, message: Publication<'_, [u8]>) -> Option<u32> {
+        self.hub.publish(message.topic, message.value);
+        self.enqueue(message)
+    }
+    fn enqueue(&mut self, message: Publication<'_, [u8]>) -> Option<u32> {
         let Publication {
             topic,
             qos,
             retain,
             value: payload,
         } = message;
-        self.hub.publish(topic, payload);
         match self.client.enqueue(topic, qos, retain, payload) {
             Ok(id) => {
                 self.enqueue_recovered = true;
@@ -219,30 +244,22 @@ impl MqttLink {
         event: &aether_proto::BusEvent,
         bytes: &[u8],
     ) {
-        if self.connected() {
-            let published = self.publish(Publication {
-                topic: &Topics::bus(node),
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                value: bytes,
-            });
-            if published.is_none() {
-                if let aether_proto::BusEvent::Err {
-                    kind: aether_proto::ErrorKind::Overrun,
-                    dropped: Some(dropped),
-                    ..
-                } = event
-                {
-                    // publish counted the failed report itself; retain the losses
-                    // it was carrying as well until MQTT delivery recovers.
-                    self.pending_overrun.add(*dropped);
-                }
+        let published = self.enqueue(Publication {
+            topic: &Topics::bus(node),
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            value: bytes,
+        });
+        if published.is_none() {
+            if let aether_proto::BusEvent::Err {
+                kind: aether_proto::ErrorKind::Overrun,
+                dropped: Some(dropped),
+                ..
+            } = event
+            {
+                // enqueue counted the failed report itself; preserve its losses.
+                self.pending_overrun.add(*dropped);
             }
-        } else {
-            // Do not enqueue pre-connection bus traffic ahead of status/cfg.
-            self.hub.publish("bus", bytes);
-            let dropped = self.pending_overrun.record(event);
-            self.dropped = self.dropped.saturating_add(u64::from(dropped));
         }
     }
     pub fn json(&mut self, message: Publication<'_, impl serde::Serialize>) -> Option<u32> {
@@ -272,7 +289,7 @@ impl MqttLink {
         self.pending_overrun.add(expired);
         self.pending_overrun
             .add(self.ingress_dropped.swap(0, Ordering::Relaxed));
-        if self.connected()
+        if self.bus_ready()
             && self.pending_overrun.pending() != 0
             && self.enqueue_recovered
             && bus.ready()

@@ -2,6 +2,44 @@
 use aether_proto::{BusEvent, Origin, RawTxRequest, TxStatus};
 use cec_core::bridge::{Bridge, SubmitError};
 
+/// Main-owned, bounded FIFO for events waiting for MQTT's status/cfg preamble.
+/// Drop newest on overflow; callers account for the returned event with Losses.
+pub struct EventBacklog {
+    events: std::collections::VecDeque<(BusEvent, Vec<u8>)>,
+}
+impl Default for EventBacklog {
+    fn default() -> Self {
+        Self {
+            events: std::collections::VecDeque::with_capacity(Self::CAPACITY),
+        }
+    }
+}
+impl EventBacklog {
+    /// At 10 frames/s this retains over three seconds of startup traffic.
+    pub const CAPACITY: usize = 32;
+
+    /// Move the already-serialized SSE payload into the FIFO without copying or
+    /// serializing again on reconnect. Preserve the event for loss accounting.
+    pub fn push(&mut self, event: BusEvent, bytes: Vec<u8>) -> Option<BusEvent> {
+        if self.events.len() == Self::CAPACITY {
+            Some(event)
+        } else {
+            self.events.push_back((event, bytes));
+            None
+        }
+    }
+
+    /// Only flush after the current MQTT connection's status and cfg are queued.
+    /// The consumer owns MQTT outbox-failure accounting, just as for live events.
+    pub fn flush(&mut self, ready: bool, mut send: impl FnMut(BusEvent, Vec<u8>)) {
+        if ready {
+            while let Some((event, bytes)) = self.events.pop_front() {
+                send(event, bytes);
+            }
+        }
+    }
+}
+
 /// Submit valid input. Return an immediate ordered event only on rejection or
 /// queue saturation. Accepted requests finish asynchronously through Bridge.
 ///

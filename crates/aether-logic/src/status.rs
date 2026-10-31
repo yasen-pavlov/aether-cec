@@ -57,6 +57,10 @@ pub struct Snapshot<'a> {
     pub fw: &'a str,
     /// Persistent boot counter.
     pub boot: u32,
+    /// ESP-IDF reset cause for the running boot.
+    pub reset_reason: aether_proto::ResetReason,
+    /// Recovered exception summary, retained for the entire current boot.
+    pub last_crash: Option<&'a aether_proto::LastCrash>,
     /// Monotonic microseconds.
     pub t_us: u64,
     /// Current STA IP.
@@ -85,6 +89,8 @@ pub fn online(cfg: &Config, snapshot: &Snapshot<'_>) -> Status {
         v: Some(1),
         fw: Some(snapshot.fw.try_into().expect("firmware version <=24 bytes")),
         boot: Some(snapshot.boot),
+        reset_reason: Some(snapshot.reset_reason),
+        last_crash: snapshot.last_crash.cloned(),
         t_us: Some(snapshot.t_us),
         la: snapshot.bus.la,
         pa: match cfg.pa {
@@ -116,4 +122,40 @@ pub fn telemetry(snapshot: &Snapshot<'_>) -> Telemetry {
         },
         outbox_dropped: snapshot.outbox_dropped,
     }
+}
+
+/// Produce the bounded wire summary from ESP-IDF's Xtensa core dump fields.
+///
+/// Task names are at most 16 bytes, NUL-terminated when shorter, and scrubbed to
+/// printable non-whitespace ASCII. Only the first eight backtrace PCs are kept.
+/// Even a ten-digit cause, 16-byte name and eight full-width PCs fit in 120 bytes.
+///
+/// # Panics
+/// Only if the fixed output-size invariant is violated by an implementation
+/// change; input slices are truncated before formatting and cannot exceed it.
+pub fn crash_summary(
+    cause: u32,
+    pc: u32,
+    task: &[u8],
+    backtrace: &[u32],
+) -> aether_proto::LastCrash {
+    use core::fmt::Write;
+    let mut text = aether_proto::LastCrash::new();
+    write!(text, "{cause} pc={pc:08x} task=").expect("bounded crash header");
+    for &byte in task.iter().take(16).take_while(|&&byte| byte != 0) {
+        text.push(if byte.is_ascii_graphic() {
+            char::from(byte)
+        } else {
+            '?'
+        })
+        .expect("bounded task name");
+    }
+    text.push_str(" bt=").expect("bounded crash header");
+    for (index, pc) in backtrace.iter().take(8).enumerate() {
+        if index != 0 {
+            text.push(',').expect("bounded backtrace separator");
+        }
+        write!(text, "{pc:08x}").expect("bounded backtrace");
+    }
+    text
 }

@@ -37,6 +37,7 @@ fn main() {
     let mut health = BootHealth::new();
     events::initialize();
     ffi::private_logging();
+    let _ = ffi::last_crash();
     // Keep the receiver outside run(): an error must never terminate the console.
     let console = loop {
         match console::spawn() {
@@ -113,7 +114,8 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     })?;
     // Start the producer only after network/HTTP constructors return. From here
     // main drains bus events every turn, even without credentials or MQTT.
-    let bus = cec::Link::new(&cfg)?;
+    let bus = cec::Link::new(&cfg, http.shared.busy.clone())?;
+    let mut backlog = aether_logic::bus::EventBacklog::default();
     let mut telemetry_at = Instant::now();
     let mut status_retry_at = Instant::now();
     let mut snapshot_at = Instant::now();
@@ -228,12 +230,14 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                     link.watch_status(id);
                 }
                 status_retry_at = Instant::now();
-                link.json(Publication {
+                let configured = link.json(Publication {
                     topic: &Topics::cfg(&node),
                     qos: QoS::AtLeastOnce,
                     retain: true,
                     value: &cfg,
                 });
+                link.bus_preamble(published.is_some(), configured.is_some());
+                link.flush_bus(&node, &mut backlog);
                 let tx = link.client.subscribe(&Topics::tx(&node), QoS::AtLeastOnce);
                 let cmd = link
                     .client
@@ -245,18 +249,27 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 telemetry_at = Instant::now();
             }
             if link.connected()
-                && !link.status_published()
+                && (!link.status_published() || !link.bus_ready())
                 && status_retry_at.elapsed() >= Duration::from_secs(5)
             {
                 let ip = net.ip();
-                if let Some(id) = link.json(Publication {
+                let published = link.json(Publication {
                     topic: &Topics::status(&node),
                     qos: QoS::AtLeastOnce,
                     retain: true,
                     value: &bus.online(&cfg, &snapshot(&store, &net, Some(link), &ip)),
-                }) {
+                });
+                if let Some(id) = published {
                     link.watch_status(id);
                 }
+                let configured = link.json(Publication {
+                    topic: &Topics::cfg(&node),
+                    qos: QoS::AtLeastOnce,
+                    retain: true,
+                    value: &cfg,
+                });
+                link.bus_preamble(published.is_some(), configured.is_some());
+                link.flush_bus(&node, &mut backlog);
                 status_retry_at = Instant::now();
             }
             // Bound each turn so console/reconnect/telemetry are never starved.
@@ -319,16 +332,22 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 telemetry_at = Instant::now();
             }
         }
-        // Always drain, even before MQTT connects or without an MQTT client.
-        // Offline events reach SSE and are counted, not retained as stale traffic.
-        // Preserve bus seq order; publication never runs on core 1.
+        // SSE sees events immediately. MQTT retains a bounded startup/offline
+        // FIFO, flushed only after this connection's retained status and cfg.
         for event in bus.events.try_iter().take(128) {
             let bytes = serde_json::to_vec(&event)?;
+            hub.publish("bus", &bytes);
             if let Some(link) = mqtt.as_mut() {
-                link.bus_event(&node, &event, &bytes);
-            } else {
-                hub.publish("bus", &bytes);
+                link.flush_bus(&node, &mut backlog);
+                if link.bus_ready() {
+                    link.bus_event(&node, &event, &bytes);
+                } else if let Some(event) = backlog.push(event, bytes) {
+                    link.lose_bus_event(&event);
+                }
             }
+        }
+        if let Some(link) = mqtt.as_mut() {
+            link.flush_bus(&node, &mut backlog);
         }
         let measured = {
             let snapshot = bus.snapshot.lock().unwrap();
@@ -452,7 +471,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
             .lock()
             .unwrap()
             .is_some_and(|at| at.elapsed() >= Duration::from_millis(500))
-            && bus.idle()
+            && bus.upload_idle()
         {
             ffi::restart();
         }
@@ -477,6 +496,8 @@ fn snapshot<'a>(
     Snapshot {
         fw: FW,
         boot: store.boot,
+        reset_reason: ffi::reset_reason(),
+        last_crash: ffi::last_crash(),
         t_us: ffi::now_us(),
         ip,
         rssi: net.rssi(),

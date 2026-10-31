@@ -30,7 +30,7 @@ pub struct Shared {
     pub status: Mutex<aether_proto::Status>,
     pub cfg: Mutex<aether_proto::Config>,
     pub hub: Arc<Hub>,
-    pub busy: AtomicBool,
+    pub busy: Arc<AtomicBool>,
     pub reboot: Mutex<Option<Instant>>,
     pub progress: SyncSender<OtaProgress>,
     pub storage: ota::Storage,
@@ -73,7 +73,7 @@ impl Http {
             status: Mutex::new(initial_status),
             cfg: Mutex::new(cfg.clone()),
             hub,
-            busy: AtomicBool::new(false),
+            busy: Arc::new(AtomicBool::new(false)),
             reboot: Mutex::new(None),
             progress,
             storage,
@@ -86,7 +86,7 @@ impl Http {
             lru_purge_enable: true,
             uri_match_wildcard: true,
             max_uri_handlers: 16,
-            stack_size: 12288,
+            stack_size: 16384,
             ..Default::default()
         })?;
         let sse = crate::ffi::register_sse(server.handle(), shared.clone())?;
@@ -181,6 +181,7 @@ fn handle(
                 online: true,
                 fw: crate::FW.try_into().unwrap(),
                 boot: state.boot,
+                reset_reason: Some(crate::ffi::reset_reason()),
             })
             .unwrap(),
         ),

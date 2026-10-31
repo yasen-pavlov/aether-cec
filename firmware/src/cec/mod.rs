@@ -13,7 +13,7 @@ use cec_core::{
 };
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     mpsc::{self, Receiver, SyncSender},
 };
 
@@ -26,11 +26,12 @@ pub enum Command {
 pub struct Link {
     commands: SyncSender<Command>,
     pending: Arc<AtomicU32>,
+    upload_idle: Arc<AtomicBool>,
     pub events: Receiver<BusEvent>,
     pub snapshot: Arc<Mutex<BusSnapshot>>,
 }
 impl Link {
-    pub fn new(cfg: &aether_proto::Config) -> Result<Self> {
+    pub fn new(cfg: &aether_proto::Config, ota_busy: Arc<AtomicBool>) -> Result<Self> {
         let core = aether_logic::config::core_config(cfg)?;
         let pin = cfg.gpio.cec;
         let listener = cfg.ack.is_empty();
@@ -38,6 +39,8 @@ impl Link {
         let (tx, events) = mpsc::sync_channel(128);
         let pending = Arc::new(AtomicU32::new(0));
         let pending_task = pending.clone();
+        let upload_idle = Arc::new(AtomicBool::new(false));
+        let upload_idle_task = upload_idle.clone();
         let snapshot = Arc::new(Mutex::new(BusSnapshot {
             la: core.la,
             ..Default::default()
@@ -46,7 +49,8 @@ impl Link {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         // Hardware is created on the caller (core 0): creating the RMT channel from
         // the pinned core-1 thread stalled for a minute on the bench (o-10 trace).
-        let hardware = ffi::cec::Hardware::new(pin).map_err(|e| format!("cec_init_failed {e}"))?;
+        let hardware = ffi::cec::Hardware::new(pin, ota_busy.clone())
+            .map_err(|e| format!("cec_init_failed {e}"))?;
         ffi::cec::spawn_bus(move || match Ok::<_, crate::config::Error>(hardware) {
             Ok(hardware) => {
                 let _ = ready_tx.send(None);
@@ -56,6 +60,8 @@ impl Link {
                     commands: rx,
                     events: tx,
                     pending: pending_task,
+                    ota_busy,
+                    upload_idle: upload_idle_task,
                     snapshot: shared,
                     hardware,
                 })
@@ -79,6 +85,7 @@ impl Link {
         Ok(Self {
             commands,
             pending,
+            upload_idle,
             events,
             snapshot,
         })
@@ -96,8 +103,10 @@ impl Link {
             true
         }
     }
-    pub fn idle(&self) -> bool {
-        self.pending.load(Ordering::Acquire) == 0 && self.snapshot.lock().unwrap().idle
+    /// The bus has observed OTA suspension and released all hardware. Queued
+    /// requests deliberately remain queued and must not prevent OTA reboot.
+    pub fn upload_idle(&self) -> bool {
+        self.upload_idle.load(Ordering::Acquire)
     }
     pub fn online(
         &self,
@@ -123,6 +132,8 @@ struct Init {
     listener: bool,
     commands: Receiver<Command>,
     events: SyncSender<BusEvent>,
+    ota_busy: Arc<AtomicBool>,
+    upload_idle: Arc<AtomicBool>,
     pending: Arc<AtomicU32>,
     snapshot: Arc<Mutex<BusSnapshot>>,
     hardware: ffi::cec::Hardware,
@@ -135,6 +146,8 @@ struct Runner {
     commands: Receiver<Command>,
     events: SyncSender<BusEvent>,
     pending: Arc<AtomicU32>,
+    ota_busy: Arc<AtomicBool>,
+    upload_idle: Arc<AtomicBool>,
     snapshot: Arc<Mutex<BusSnapshot>>,
     stats: BusSnapshot,
     health: Health,
@@ -177,6 +190,8 @@ impl Runner {
             commands: init.commands,
             events: init.events,
             pending: init.pending,
+            ota_busy: init.ota_busy,
+            upload_idle: init.upload_idle,
             snapshot: init.snapshot,
             health: Health::new(now, level),
             listener: init.listener,
@@ -222,7 +237,7 @@ impl Runner {
     fn rx(&mut self, event: RxEvent, now: u64) {
         match &event {
             RxEvent::AckDue { fall_at_us } => {
-                if !self.listener {
+                if !self.listener && !self.ota_busy.load(Ordering::Acquire) {
                     self.hardware.ack(*fall_at_us);
                 }
                 return;
@@ -373,11 +388,80 @@ impl Runner {
             }
         }
     }
+    fn snapshot(&mut self) {
+        self.overrun();
+        self.stats.la = self.bridge.config().la;
+        self.stats.state = self.health.state();
+        self.stats.depth = self.bridge.queue_depth() as u8;
+        self.stats.idle = !self.tx.in_progress()
+            && self.stats.depth == 0
+            && self.deferred_config.is_none()
+            && self.hardware.finished()
+            && !self.hardware.ack_active();
+        if let Ok(mut shared) = self.snapshot.try_lock() {
+            *shared = self.stats.clone();
+        }
+    }
+
+    fn suspend(&mut self) {
+        self.hardware.suspend();
+        self.decoder.set_ack_set(AckSet::default());
+        self.decoder.set_transmitting(false);
+        self.sample_offset = None;
+        self.waveform_end_us = None;
+        self.schedule.clear();
+        self.failure = None;
+        // Release the waveform before draining/publishing its partial echo.
+        // Retire only the active request; the policy and command queues survive.
+        let active = self.tx.in_progress();
+        self.tx = Tx::new();
+        self.drain();
+        if active {
+            self.stats.tx.busy += 1;
+            if let Some(event) = self.bridge.on_tx_done(
+                cec_core::TxOutcome {
+                    status: cec_core::TxStatus::Busy,
+                    attempts: 0,
+                },
+                ffi::now_us(),
+            ) {
+                if matches!(
+                    event,
+                    cec_core::bridge::BusEvent::Tx {
+                        origin: cec_core::bridge::Origin::Local { .. },
+                        ..
+                    }
+                ) {
+                    self.stats.tx.local += 1;
+                }
+                self.publish(event.into());
+            }
+        }
+        self.snapshot();
+        self.upload_idle.store(
+            self.hardware.finished() && !self.hardware.ack_active(),
+            Ordering::Release,
+        );
+        self.hardware.upload_wait();
+    }
+
     fn run(mut self) -> ! {
+        ffi::cec::watch_bus().expect("cec_watchdog_init_failed");
         if let Err(error) = self.hardware.arm() {
             log::error!("cec_arm_failed {error}");
         }
         loop {
+            ffi::cec::feed_bus();
+            if self.ota_busy.load(Ordering::Acquire) {
+                self.suspend();
+                continue;
+            }
+            self.upload_idle.store(false, Ordering::Release);
+            self.decoder.set_ack_set(if self.listener {
+                AckSet::default()
+            } else {
+                self.bridge.config().ack
+            });
             self.drain();
             self.commands();
             let now = ffi::now_us();
@@ -387,7 +471,10 @@ impl Runner {
                 self.waveform_end_us = None;
                 self.schedule.clear();
             }
-            if !self.tx.in_progress() && !self.hardware.ack_active() {
+            if !self.ota_busy.load(Ordering::Acquire)
+                && !self.tx.in_progress()
+                && !self.hardware.ack_active()
+            {
                 if let Some(request) = self.bridge.next_request() {
                     self.decoder.set_ack_set(if self.listener {
                         AckSet::default()
@@ -430,6 +517,11 @@ impl Runner {
                     eom,
                     block_start_us,
                 } => {
+                    // The upload can begin while RX/commands are being drained.
+                    // Re-enter through suspend before allowing another block.
+                    if self.ota_busy.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if start {
                         self.failure = None;
                     }
@@ -522,21 +614,12 @@ impl Runner {
                     }
                 }
             }
-            self.overrun();
-            self.stats.la = self.bridge.config().la;
-            self.stats.state = self.health.state();
-            self.stats.depth = self.bridge.queue_depth() as u8;
-            self.stats.idle = !self.tx.in_progress()
-                && self.stats.depth == 0
-                && self.deferred_config.is_none()
-                && self.hardware.finished()
-                && !self.hardware.ack_active();
-            if let Ok(mut shared) = self.snapshot.try_lock() {
-                *shared = self.stats.clone();
-            }
+            self.snapshot();
             // Actions that expose the next action immediately must not sleep:
             // first SampleAt follows SendBlock, chained blocks follow ACK samples.
-            if matches!(action, TxAction::Wait { .. }) {
+            if !self.decoder.busy() && !self.tx.in_progress() && !self.hardware.ack_active() {
+                self.hardware.idle_wait();
+            } else if matches!(action, TxAction::Wait { .. }) {
                 self.hardware.wait(wait);
             }
         }
