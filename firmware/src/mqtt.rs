@@ -85,7 +85,9 @@ impl MqttLink {
             buffer_size: 2048,
             out_buffer_size: 2048,
             outbox_limit: Some(16 * 1024),
-            task_stack: 6144,
+            // 6144 is esp-mqtt's default; TLS with the certificate bundle needs
+            // more during (re)connect, and a stack overflow here is a `panic` reset.
+            task_stack: 10240,
             ..Default::default()
         };
         let mut assembler = aether_logic::ingress::Assembler::default();
