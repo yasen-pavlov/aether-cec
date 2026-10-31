@@ -9,8 +9,8 @@ UI/push OTA are implemented against [`docs/protocol.md`](docs/protocol.md).
 Verified live: promiscuous receive with ACK bits, follower ACK, local identity
 replies, directed and broadcast host sends answered by the receiver and a
 playback device on the first attempt, OTA upgrade and bootloader rollback.
-Known open issue: roughly one in five OTA uploads still ends in a `panic`
-reset (captured by the flash core dump from the next partition-table flash on).
+OTA uploads on the live bus run clean (5/5) after the heap-abort bench setting
+was removed; crashes are captured to a flash core dump and surfaced as `last_crash`.
 No host adapter uses the protocol yet (Choregos `bridge.kind = "aether"` is next).
 
 | Crate | Purpose |
