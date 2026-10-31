@@ -8,3 +8,4 @@
 /firmware/.embuild/
 /firmware/target
 sdkconfig.old
+/firmware/.cargo/config.local.toml

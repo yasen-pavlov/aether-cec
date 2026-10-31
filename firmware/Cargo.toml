@@ -1,0 +1,32 @@
+[package]
+name = "aether"
+description = "ESP32 HDMI-CEC bridge firmware speaking the aether MQTT protocol"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/yasen-pavlov/aether-cec"
+rust-version = "1.85"
+
+# Standalone package (not a workspace member): it needs the Xtensa toolchain
+# and must not break host-side `cargo test` at the repo root.
+[workspace]
+
+[[bin]]
+name = "aether"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+cec-core = { package = "aether-cec-core", path = "../crates/cec-core" }
+aether-proto = { package = "aether-cec-proto", path = "../crates/aether-proto" }
+esp-idf-svc = { version = "0.53", features = ["critical-section"] }
+log = "0.4"
+
+[build-dependencies]
+embuild = "0.33"
