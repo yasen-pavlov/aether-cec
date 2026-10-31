@@ -10,7 +10,9 @@ pub fn spawn() -> Result<Receiver<ConsoleCommand>> {
     let (sender, receiver) = mpsc::sync_channel(4);
     std::thread::Builder::new()
         .name("aether-console".into())
-        .stack_size(6144)
+        // 6 KiB overflowed into the adjacent channel allocation on the bench
+        // (intermittent LoadProhibited in the channel's waker mutex on both ends).
+        .stack_size(12288)
         .spawn(move || {
             let mut input = std::io::stdin();
             let mut line = Vec::with_capacity(MAX_LINE);

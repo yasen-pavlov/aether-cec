@@ -44,15 +44,28 @@ pub struct Http {
     _sse: crate::ffi::SseRegistration,
     _server: EspHttpServer<'static>,
 }
+/// Constructor inputs. One by-reference argument: on the bench, passing these
+/// six values as separate by-value parameters delivered a garbage `hub`
+/// pointer (0xa5a5a5a5 stack fill) with the esp Rust 1.97 toolchain, i.e. a
+/// caller/callee stack-argument mismatch on Xtensa. Keep call signatures small.
+pub struct Init<'a> {
+    pub token: &'a str,
+    pub cfg: &'a aether_proto::Config,
+    pub initial_status: aether_proto::Status,
+    pub boot: u32,
+    pub storage: ota::Storage,
+    pub hub: Arc<Hub>,
+}
 impl Http {
-    pub fn new(
-        token: &str,
-        cfg: &aether_proto::Config,
-        initial_status: aether_proto::Status,
-        boot: u32,
-        storage: ota::Storage,
-        hub: Arc<Hub>,
-    ) -> Result<Self> {
+    pub fn new(init: Init<'_>) -> Result<Self> {
+        let Init {
+            token,
+            cfg,
+            initial_status,
+            boot,
+            storage,
+            hub,
+        } = init;
         let (operations, requests) = mpsc::sync_channel(4);
         let (progress, events) = mpsc::sync_channel(16);
         let shared = Arc::new(Shared {

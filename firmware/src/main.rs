@@ -99,14 +99,14 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     }
     let ip = net.ip();
     let initial_status = status::online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
-    let http = http::Http::new(
-        &secrets.token,
-        &cfg,
+    let http = http::Http::new(http::Init {
+        token: &secrets.token,
+        cfg: &cfg,
         initial_status,
-        store.boot,
-        store.ota.clone(),
-        hub.clone(),
-    )?;
+        boot: store.boot,
+        storage: store.ota.clone(),
+        hub: hub.clone(),
+    })?;
     let mut telemetry_at = Instant::now();
     let mut status_retry_at = Instant::now();
     let mut snapshot_at = Instant::now();

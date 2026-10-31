@@ -206,7 +206,7 @@ unsafe extern "C" fn sse_handler(req: *mut sys::httpd_req_t) -> sys::esp_err_t {
     let address = copy as usize;
     if std::thread::Builder::new()
         .name("http-sse".into())
-        .stack_size(4096)
+        .stack_size(8192)
         .spawn(move || {
             let req = address as *mut sys::httpd_req_t;
             unsafe {
