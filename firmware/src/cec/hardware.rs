@@ -1,6 +1,6 @@
 //! Unsafe ESP-IDF boundary, imported as ffi::cec. All contexts are retained
 //! for the lifetime of the bus task; callbacks never borrow movable task data.
-use aether_logic::cec::{Block, EdgeRing, Schedule, ack_in_window};
+use aether_logic::cec::{Block, EdgeRing, ack_in_window};
 use cec_core::{
     rx::{Edge, Level},
     timing,
@@ -352,8 +352,10 @@ impl Hardware {
             return false;
         }
         self.interrupts.ack_armed.store(false, Ordering::Release);
-        let buffer = &mut self.buffers[self.slot];
-        for (out, symbol) in buffer.iter_mut().zip(&block.symbols[..block.len]) {
+        for (out, symbol) in self.buffers[self.slot]
+            .iter_mut()
+            .zip(&block.symbols[..block.len])
+        {
             *out = sys::rmt_symbol_word_t {
                 val: symbol.low | (symbol.high << 16) | (1 << 31),
             };
@@ -361,10 +363,14 @@ impl Hardware {
         let mut cfg = sys::rmt_transmit_config_t::default();
         cfg.flags.set_eot_level(1);
         cfg.flags.set_queue_nonblocking(1);
-        // Check immediately before launch, not from a stale decoder snapshot.
-        if unsafe { sys::gpio_get_level(self.interrupts.pin) } == 0
-            || !self.interrupts.edges.is_empty()
-            || (block.len == 10 && !Schedule::can_chain(crate::ffi::now_us(), *block_start_us))
+        // Only a fresh header acquires the bus now. A chained data block is
+        // queued at the ACK sample, when a directed follower legitimately holds
+        // LOW; requiring HIGH here aborts every acknowledged directed header.
+        // The active RMT transaction owns the pad until the queued start.
+        let header = block.len == 11;
+        if !block.can_launch(crate::ffi::now_us(), *block_start_us, self.level())
+            || (header && !self.interrupts.edges.is_empty())
+            || (!header && (!self.routed || self.finished()))
         {
             return false;
         }
@@ -380,7 +386,7 @@ impl Hardware {
             if sys::rmt_transmit(
                 self.channel,
                 self.encoder,
-                buffer.as_ptr().cast(),
+                self.buffers[self.slot].as_ptr().cast(),
                 block.len * core::mem::size_of::<sys::rmt_symbol_word_t>(),
                 &cfg,
             ) != sys::ESP_OK

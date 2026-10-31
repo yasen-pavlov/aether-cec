@@ -451,3 +451,230 @@ fn overrun_report_retries_preserve_count_and_sequence_until_accepted() {
     )));
     assert_eq!(bridge.seq(), 0);
 }
+
+#[test]
+fn launch_guard_distinguishes_bus_acquisition_from_ack_time_queueing() {
+    let header = Block::render(true, 0x04, false);
+    let chained = Block::render(false, 0x90, true);
+    let end = u64::from(timing::START_TOTAL.nominal + 10 * timing::BIT);
+    let ack_sample = end - u64::from(timing::BIT - timing::SAMPLE_AT);
+    assert!(header.can_launch(0, 0, Level::High));
+    assert!(!header.can_launch(0, 0, Level::Low));
+    for level in [Level::Low, Level::High] {
+        assert!(chained.can_launch(ack_sample, end, level));
+        assert!(chained.can_launch(end - Schedule::CHAIN_MARGIN_US - 1, end, level));
+        assert!(!chained.can_launch(end - Schedule::CHAIN_MARGIN_US, end, level));
+        assert!(!chained.can_launch(end, end, level));
+    }
+}
+
+/// Render the wired-AND echo, including a follower stretching only the ACK low.
+/// Queueing a block does not advance the physical line to its future origin.
+fn transmit_with_echo(frame: &cec_core::Frame, ack_low: u32, launch_delay: u64) {
+    let mut tx = Tx::new();
+    tx.start(
+        cec_core::tx::TxRequest {
+            frame: frame.clone(),
+            retries: 0,
+        },
+        0,
+        0,
+        false,
+    )
+    .unwrap();
+    let mut decoder = Decoder::new(AckSet::new(&[0]));
+    decoder.set_transmitting(true);
+    let mut schedule = Schedule::default();
+    let mut edges = std::collections::VecDeque::<Edge>::new();
+    let mut events = Vec::new();
+    let mut level = Level::High;
+    let mut now = u64::from(timing::SIGNAL_FREE_NEW);
+    let mut sample = None;
+    let mut blocks = 0;
+    let mut queued_while_low = false;
+    for _ in 0..1000 {
+        while edges.front().is_some_and(|edge| edge.t_us <= now) {
+            let edge = edges.pop_front().unwrap();
+            level = edge.level;
+            if let Some(origin) = schedule.edge(edge) {
+                tx.block_started(origin);
+            }
+            if let Some(event) = decoder.edge(edge) {
+                observe_echo(event, &mut tx, &mut schedule, now, &mut events);
+            }
+        }
+        while let Some(event) = decoder.poll(now) {
+            observe_echo(event, &mut tx, &mut schedule, now, &mut events);
+        }
+        if let Some((deadline, offset)) = sample {
+            if now >= deadline {
+                if schedule.driven_low(offset) && level != Level::Low {
+                    tx.line_error(now);
+                } else {
+                    tx.line_sample(level, now);
+                }
+                sample = None;
+            }
+        }
+        let action = if let Some(deadline) = schedule.origin_deadline() {
+            assert!(now < deadline, "missing block origin");
+            TxAction::Wait { until_us: deadline }
+        } else {
+            tx.step(now, decoder.quiet_since_us(now))
+        };
+        let deadline = schedule.action(action);
+        match action {
+            TxAction::SendBlock {
+                start,
+                byte,
+                eom,
+                block_start_us,
+            } => {
+                let block = Block::render(start, byte, eom);
+                assert!(block.can_launch(now, block_start_us, level));
+                queued_while_low |= !start && level == Level::Low;
+                blocks += 1;
+                let origin = block_start_us + if start { launch_delay } else { 0 };
+                queue_echo(&block, origin, ack_low, &mut edges);
+            }
+            TxAction::SampleAt { at_us } => sample = Some((deadline.unwrap(), at_us)),
+            TxAction::Wait { until_us } => {
+                now = until_us;
+                if let Some(edge) = edges.front() {
+                    now = now.min(edge.t_us);
+                }
+                if let Some((deadline, _)) = sample {
+                    now = now.min(deadline);
+                }
+            }
+            TxAction::Abort => panic!("valid ACK echo must not abort"),
+            TxAction::Done { outcome, .. } => {
+                assert_echo_outcome(frame, ack_low, outcome, blocks, queued_while_low, &events);
+                return;
+            }
+        }
+    }
+    panic!("executor failed to complete");
+}
+
+fn queue_echo(
+    block: &Block,
+    origin: u64,
+    ack_low: u32,
+    edges: &mut std::collections::VecDeque<Edge>,
+) {
+    let mut fall = origin;
+    for (index, symbol) in block.symbols[..block.len].iter().enumerate() {
+        edges.push_back(Edge {
+            level: Level::Low,
+            t_us: fall,
+        });
+        edges.push_back(Edge {
+            level: Level::High,
+            t_us: fall
+                + u64::from(if index + 1 == block.len {
+                    ack_low
+                } else {
+                    symbol.low
+                }),
+        });
+        fall += u64::from(symbol.low + symbol.high);
+    }
+}
+
+fn observe_echo(
+    event: RxEvent,
+    tx: &mut Tx,
+    schedule: &mut Schedule,
+    now: u64,
+    events: &mut Vec<RxEvent>,
+) {
+    if matches!(event, RxEvent::Error { .. }) && schedule.active() {
+        tx.line_error(now);
+        schedule.clear();
+    }
+    events.push(event);
+}
+
+fn assert_echo_outcome(
+    frame: &cec_core::Frame,
+    ack_low: u32,
+    outcome: cec_core::TxOutcome,
+    blocks: usize,
+    queued_while_low: bool,
+    events: &[RxEvent],
+) {
+    let ack = if frame.is_broadcast() {
+        ack_low <= timing::SAMPLE_AT
+    } else {
+        ack_low > timing::SAMPLE_AT
+    };
+    assert_eq!(outcome.attempts, 1);
+    assert_eq!(blocks, if ack { frame.blocks() } else { 1 });
+    assert_eq!(
+        outcome.status,
+        if ack {
+            cec_core::TxStatus::Ack
+        } else {
+            cec_core::TxStatus::Nack
+        }
+    );
+    assert_eq!(queued_while_low, ack && ack_low > timing::SAMPLE_AT);
+    assert_eq!(events.len(), 1, "exactly one echo event, no own ACK");
+    if !ack && frame.is_broadcast() {
+        // Only directed NACKs complete truncated frames in Decoder.
+        assert!(matches!(
+            &events[0],
+            RxEvent::Error {
+                kind: cec_core::rx::RxError::BitTiming,
+                bits: 8,
+                ..
+            }
+        ));
+    } else {
+        assert!(matches!(
+            &events[0],
+            RxEvent::Frame { frame: echo, ack: observed, .. }
+                if *observed == ack && echo.from == frame.from
+                    && echo.to == frame.to
+                    && echo.data.as_slice() == if ack { frame.data.as_slice() } else { &[] }
+        ));
+    }
+}
+
+#[test]
+fn directed_ack_low_queues_following_blocks_and_decodes_own_echo() {
+    for (to, data) in [(5, &[0x8f][..]), (4, &[0x90, 0x00]), (4, &[0x9e, 0x05])] {
+        for ack_low in [
+            timing::DATA_LOW_0.min,
+            timing::ACK_LOW,
+            timing::DATA_LOW_0.max,
+        ] {
+            for delay in [0, Schedule::ORIGIN_TIMEOUT_US - 1] {
+                transmit_with_echo(&cec_core::Frame::new(0, to, data).unwrap(), ack_low, delay);
+            }
+        }
+    }
+}
+
+#[test]
+fn directed_high_ack_sample_is_nack_not_line_error() {
+    transmit_with_echo(
+        &cec_core::Frame::new(0, 5, &[0x8f]).unwrap(),
+        timing::DATA_LOW_1.nominal,
+        0,
+    );
+}
+
+#[test]
+fn broadcast_ack_polarity_and_zero_initiator_samples() {
+    for data in [&[0x85][..], &[0x87, 0x01, 0x23, 0x45]] {
+        for ack_low in [timing::DATA_LOW_1.nominal, timing::ACK_LOW] {
+            transmit_with_echo(
+                &cec_core::Frame::new(0, cec_core::BROADCAST, data).unwrap(),
+                ack_low,
+                Schedule::ORIGIN_TIMEOUT_US - 1,
+            );
+        }
+    }
+}

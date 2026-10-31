@@ -71,6 +71,16 @@ impl Block {
             .map(|s| u64::from(s.low + s.high))
             .sum()
     }
+    /// A fresh header acquires a released bus; a data block is queued while the
+    /// previous ACK may still be held low by a follower. Its waveform starts
+    /// only at the previous block's end, not at this queueing instant.
+    pub fn can_launch(&self, now_us: u64, block_start_us: u64, level: Level) -> bool {
+        if self.len == 11 {
+            level == Level::High
+        } else {
+            Schedule::can_chain(now_us, block_start_us)
+        }
+    }
 }
 /// Current block and physical sample schedule derived from TX actions and echoes.
 #[derive(Default)]
