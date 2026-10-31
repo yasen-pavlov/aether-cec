@@ -329,11 +329,17 @@ fn status_last_will_and_u64_timestamps_round_trip() {
     let status: Status = serde_json::from_str(LWT_PAYLOAD).unwrap();
     assert_eq!(serde_json::to_string(&status).unwrap(), LWT_PAYLOAD);
     let allocating: Status =
-        serde_json::from_str(r#"{"online":true,"la":null,"hpd":null}"#).unwrap();
+        serde_json::from_str(r#"{"online":true,"la":null,"bus":null,"hpd":null}"#).unwrap();
     assert_eq!(
         serde_json::to_value(allocating).unwrap(),
-        json!({"online":true,"la":null,"hpd":null})
+        json!({"online":true,"la":null,"bus":null,"hpd":null})
     );
+    for bus in ["ok", "stuck_low", "no_pullup"] {
+        let value = json!({"online":true,"la":null,"bus":bus,"hpd":null});
+        let status: Status = serde_json::from_value(value.clone()).unwrap();
+        assert!(status.bus.is_some());
+        assert_eq!(serde_json::to_value(status).unwrap(), value);
+    }
     let text = json!({"ev":"line", "seq":u32::MAX, "t_us":u64::MAX, "hpd":false}).to_string();
     let parsed: BusEvent = serde_json::from_str(&text).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap()["t_us"], u64::MAX);
@@ -375,6 +381,7 @@ fn escaped_strings_work_in_diagnostics_and_all_command_result_fields() {
     round_trip::<CommandResult>(
         r#"{"id":"x","verb":"ping","ok":false,"reason":"failed","echo":"abc"}"#,
     );
+    round_trip::<CommandResult>(r#"{"verb":"ping","ok":false,"reason":"malformed"}"#);
     round_trip::<OtaProgress>(r#"{"id":"x","state":"failed","fw":"0.1.0","reason":"failed"}"#);
     round_trip::<ConfigCommand>(
         r#"{"id":"x","node":"bench","la":"auto","type":"playback","pa":"edid","osd":"Bench","vendor":"ABCDEF","cec_version":"1.3a","replies":["83"],"log":"debug"}"#,

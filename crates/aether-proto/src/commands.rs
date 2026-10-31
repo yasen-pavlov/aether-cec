@@ -397,8 +397,9 @@ impl Command {
 /// Command outcome on `cmd/result`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandResult {
-    /// Echoed request identifier.
-    pub id: RequestId,
+    /// Echoed request identifier; absent when ingress JSON is malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
     /// Request topic verb.
     pub verb: Verb,
     /// Whether the operation succeeded.

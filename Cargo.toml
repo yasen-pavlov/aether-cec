@@ -1,8 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/cec-core", "crates/aether-proto"]
-# firmware/ joins the workspace in phase 2; it needs the Xtensa toolchain and
-# must not break `cargo test` on the host.
+members = ["crates/cec-core", "crates/aether-proto", "crates/aether-logic"]
+# firmware/ stays standalone because it requires the Xtensa toolchain.
 
 [workspace.package]
 version = "0.0.0"

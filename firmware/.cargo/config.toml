@@ -13,3 +13,7 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32"
 ESP_IDF_VERSION = "v5.4.2"
 ESP_IDF_TOOLS_INSTALL_DIR = "global"
+ESP_IDF_SDKCONFIG_DEFAULTS = { value = "sdkconfig.defaults", relative = true }
+# esp-idf-sys builds its CMake project in OUT_DIR; stage the tracked CSV there.
+ESP_IDF_GLOB_AETHER_BASE = { value = ".", relative = true }
+ESP_IDF_GLOB_AETHER_FILES = "partitions.csv"

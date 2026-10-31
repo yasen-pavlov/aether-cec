@@ -1,0 +1,15 @@
+[package]
+name = "aether-logic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aether-proto = { package = "aether-cec-proto", path = "../aether-proto", features = ["std"] }
+cec-core = { package = "aether-cec-core", path = "../cec-core" }
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -304,3 +304,85 @@ neither `serde_json` nor serde's `alloc` feature.
 - `aether_proto`: golden JSON from every example in `docs/protocol.md` parses and
   re-serialises byte-identically (modulo key order); unknown keys ignored;
   `id` of 17 bytes fails; `From<BusEvent>` mapping for each variant.
+
+## 9. Firmware executor layout
+
+`firmware/` is a standalone ESP-IDF package, excluded from host workspace checks.
+`crates/aether-logic` is a plain-std workspace member containing configuration
+merge/validation, bounded quoted-console parsing, command plans, phase-2 TX
+rejections, bounded MQTT fragment reassembly and status/telemetry construction.
+Protocol structs remain the one
+wire definition. `CommandResult.id` is now optional and omitted for malformed
+commands; valid commands always echo their ID. `pa:edid` is rejected as
+`edid_unsupported` until the configuration contract includes DDC pins.
+
+The main ESP task (8000-byte stack) owns NVS, effective Config, runtime power,
+the single heap-boxed `cec_core::bridge::Bridge`, Wi-Fi and the `EspMqttClient`
+handle. It polls Wi-Fi reconnection every five seconds after a disconnect and
+runs MQTT command effects serially. SDK defaults are resolved via the absolute
+Cargo-relative `ESP_IDF_SDKCONFIG_DEFAULTS`; firmware builds stay in-tree.
+There is no SNTP client: certificate chain/hostname validation is enabled but
+validity dates are not checked (`CONFIG_MBEDTLS_HAVE_TIME_DATE` unset), avoiding
+a hard NTP dependency. Protocol time always uses the monotonic ESP timer.
+
+The console reader has an explicit 6144-byte stack. A UART0 driver with a
+512-byte RX ring backs blocking stdin reads, retaining pasted 200-byte lines.
+The reader sends parsed operations through a four-entry sync channel; main alone
+writes NVS. It never echoes input; responses and EspLogger share UART0.
+Credentials are JSON blobs only in namespace `secrets`, config is an
+`aether_proto::Config` JSON blob in `cfg`, and `system/boot` is separate.
+Wi-Fi SDK NVS storage is disabled. MQTT reset persists defaults preserving node,
+credentials and boot; console factory-reset erases the entire default NVS partition.
+WPA input must be empty (open), 8–63 printable ASCII bytes, or 64 hex digits.
+The same credential validators run on stored secrets. Invalid stored cfg/secrets
+fall back to defaults with a static scrubbed code. NVS NO_FREE_PAGES or
+NEW_VERSION_FOUND triggers a logged erase and one init retry. Wi-Fi configuration,
+start and initial-connect failures are nonfatal. The console is started before
+fallible startup; its receiver survives every error. Remaining fatal errors enter
+a console-only loop supporting show, factory-reset (even without a Store), reboot.
+Before loading credentials, firmware disables SDK/dependency log targets, whose
+diagnostics can include broker URLs or SSIDs, and enables only its own scrubbed
+`aether` application records at info. Errors originating in storage/network
+libraries are never formatted into application logs or console responses.
+
+The ESP-MQTT task has an explicit 6144-byte stack, a 2048-byte I/O buffer and a
+16-KiB outbox. Its callback copies only data messages into a 32-entry channel
+without blocking while ESP-MQTT holds its internal mutex. Connection state,
+connection generation and the pending shutdown PUBACK id/ack flag are atomic,
+not lossy channel events. Fragmented payloads are bounded to 2048 bytes;
+oversized input is delivered as malformed. Full ingress increments an atomic
+overrun count. Publication uses nonblocking enqueue, dropping newest on failure;
+failed enqueues and expired entries count toward telemetry. After enqueue recovers,
+main emits one accumulated overrun error with sequence from Bridge::next_seq().
+Deleted-message callbacks are enabled; failed subscriptions force a disconnect
+and esp-mqtt auto-reconnect, ensuring subscriptions are retried.
+The callback never logs topics, payloads or credentials.
+
+On connection, main enqueues retained online status, then cfg, then subscribes
+to tx and cmd/+. Restart/reset enqueue the command result followed by retained
+offline status; main waits for the offline PUBACK, bounded to two seconds,
+before rebooting (LWT covers loss of connection). Config changes persist before
+the effective value is replaced or acknowledged. Node/topics and GPIO wiring
+take effect only after restart. Power is in-memory only and survives cfg changes.
+The MQTT log topic is intentionally absent; cfg.log is stored but inert.
+
+The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
+0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at
+0x20000 and 0x200000. Remaining 0x20000 bytes are an unused `storage` NVS
+partition. Flash with this table and the IDF-built rollback-enabled bootloader,
+not espflash defaults. The main task marks the app valid after MQTT connects or,
+for phase-2 provisioning without a broker, after 60 s (including recovery mode).
+OTA download remains deferred; phase 5 must distinguish pending OTA from first
+provisioning before enforcing protocol §9's MQTT/status rollback deadline.
+Cargo's `ESP_IDF_GLOB_AETHER_*` settings stage and track `partitions.csv` in the
+generated esp-idf-sys project, where IDF resolves the custom CSV filename.
+
+Phase 3 replaces `aether_logic::bus::reject` with the executor handoff:
+the existing Bridge owns all sequence allocation and power, including stub
+rejections/overruns now. A dedicated high-priority bus task will own GPIO4,
+the edge ISR ring, Decoder, TX RMT and sample timer, draining timestamped edges
+and timeouts before completions as §1 requires. Network publication remains in
+the main owner through a bounded event queue, never in an ISR. Phase 2 performs
+no pin configuration, allocation polls, physical sends or HPD sampling; status
+therefore has `la:null`, `bus:null`, `hpd:null`; deferred bus counters stay zero,
+while queue.max reports the request capacity (16), not an observed high-water mark.

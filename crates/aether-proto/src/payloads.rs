@@ -48,7 +48,7 @@ pub struct Status {
     /// Wireless signal strength in dBm.
     #[serde(default)]
     pub rssi: Option<i16>,
-    /// Bus health.
+    /// Bus health, null in online status until the line has been measured.
     #[serde(default)]
     pub bus: Option<BusState>,
     /// HPD level, null if the GPIO is not configured.
@@ -90,8 +90,8 @@ impl Serialize for Status {
         if let Some(value) = self.rssi {
             object.serialize_entry("rssi", &value)?;
         }
-        if let Some(value) = self.bus {
-            object.serialize_entry("bus", &value)?;
+        if self.online || self.bus.is_some() {
+            object.serialize_entry("bus", &self.bus)?;
         }
         if self.online || self.hpd.is_some() {
             object.serialize_entry("hpd", &self.hpd)?;

@@ -5,7 +5,7 @@ Native MQTT contract between the Rust ESP32 HDMI-CEC bridge ("aether") and Chore
 (`tele/<t>/SENSOR` / `cmnd/<t>/HdmiSend` / `stat/<t>/RESULT` / `tele/<t>/LWT`), which stays
 available in Choregos as `bridge.kind = "tasmota"`.
 
-Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; pull OTA; serial-only credentials). Not yet implemented; this file moves to `docs/protocol.md` of the firmware repo.
+Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local identity replies incl. `8F` with host-set power; vendor default `012345`; pull OTA; serial-only credentials). Implemented: §2, §3, §6 (counters zero until phase 3), §7, §8 (ota → not_implemented), §10; deferred: §4/§5 bus, §9 OTA, `log` topic.
 
 ---
 
@@ -56,6 +56,9 @@ Transport: MQTT over TLS (port 8883, server certificate verified against the ESP
 bundle, user/password auth) is the default; plain 1883 is a console-selectable fallback for brokers
 without a certificate. Non-goals for v1: multi-bridge arbitration, TLS client certificates, MQTT 5
 features, binary/CBOR encoding, Home Assistant discovery (Choregos owns HA).
+Certificate chains and hostnames are checked, but certificate validity dates are not:
+`CONFIG_MBEDTLS_HAVE_TIME_DATE` is unset. There is no SNTP client or hard NTP
+dependency on this LAN device; protocol time is monotonic, not wall time.
 
 ---
 
@@ -85,7 +88,10 @@ preserves that order and makes gap detection trivial.
 Why QoS 1 on `bus`: Wi-Fi hiccups are the realistic loss case; a lost `tx` outcome today stalls
 standby verification until the 5 s FIFO expiry. With `id` + `seq` duplicates are harmless (host
 dedupes on `(boot, seq)`), so at-least-once is strictly better. The esp-mqtt outbox is bounded
-(`outbox_limit`, 16 KiB); if it overflows the firmware drops oldest events and emits `err: overrun`.
+(`outbox_limit`, 16 KiB); if it overflows esp-mqtt drops the newest event.
+Failed enqueues and expired outbox messages increment `outbox_dropped`; after
+enqueue succeeds again, the bridge emits one ordered `err kind:"overrun"` with
+the accumulated `dropped` count (including a failed overrun report itself).
 
 MQTT session: client id `aether-<node>`, clean session, keepalive 15 s, LWT on `status`, QoS 1,
 retained `{"online":false}`. On connect the bridge publishes `status`, then `cfg`, then starts `bus`.
@@ -111,7 +117,7 @@ Subscribes `aether/<node>/tx` and `aether/<node>/cmd/+`.
 | `la` | u8 \| null | logical address in use; `null` while allocating |
 | `pa` | string | physical address `a.b.c.d` |
 | `type` | string | CEC device type: `tv`, `playback`, `audio`, `recorder`, `tuner` |
-| `bus` | string | `ok` \| `stuck_low` (line low > 100 ms with no valid frame) \| `no_pullup` (line reads low at boot) |
+| `bus` | string \| null | `ok` \| `stuck_low` (line low > 100 ms with no valid frame) \| `no_pullup` (line reads low at boot); `null` = not measured (phase 2 publishes `null`) |
 | `hpd` | bool \| null | HPD input level if an HPD GPIO is configured, else `null` |
 
 Choregos mapping: `online:true` → `Event::BridgeOnline` (triggers `resync()`); `online:false` →
@@ -345,6 +351,7 @@ restarting should still get an answer.
 ## 8. `cmd/<verb>` and `cmd/result`
 
 Every command object has an `id` (same rules as `tx.id`); the result echoes `id` and `verb`:
+Malformed command JSON receives `ok:false, reason:"malformed"` with `id` omitted.
 
 ```json
 {"id":"c-7","verb":"ping","ok":true,"t_us":51000000,"echo":"abc"}
@@ -357,18 +364,25 @@ Every command object has an `id` (same rules as `tx.id`); the result echoes `id`
 | `state` | `{"power":"on"\|"standby"\|"to_on"\|"to_standby"}` | sets the value for local `8F` replies; not persisted |
 | `ping` | `{"id":…,"echo":"…"}` | result carries device `t_us`; host uses RTT/2 to map `t_us` onto wall time (sub-10 ms absolute, µs relative) |
 | `restart` | `{"id":…}` | publishes `status {"online":false}` then reboots |
-| `reset` | `{"id":…,"confirm":"<node>"}` | erase CEC config in NVS (not Wi-Fi/MQTT); restart |
+| `reset` | `{"id":…,"confirm":"<node>"}` | restore default CEC config in NVS, preserving provisioned `node` and Wi-Fi/MQTT secrets; restart |
 | `ota` | §9 | |
 
 Commands are processed in order of arrival; `cmd/result` is QoS 1.
+Serial `factory-reset` is deliberately stronger: erase the entire default NVS
+partition, including config, node, secrets and boot counter, then reboot.
 
 ---
 
 ## 9. OTA
 
 Pull model: the host (or a human) points the bridge at an HTTPS URL; the bridge streams the image
-into the inactive OTA partition, verifies SHA-256, reboots, and must reach MQTT and publish `status`
-within 60 s on the new image or ESP-IDF rollback restores the previous one.
+into the inactive OTA partition, verifies SHA-256, reboots, and confirms the new image
+on the main task after MQTT connects. During phase 2, which has the rollback-capable
+boot layout but no OTA downloader, a 60 s timeout also marks the image valid if
+MQTT never connects: first-flash provisioning must not cause an infinite rollback
+loop without a broker. Phase 5 must replace this provisioning exception with
+pending-OTA-aware confirmation: a pending OTA must publish `status` within 60 s,
+or restore the previous image. OTA download/progress is not implemented in phase 2.
 
 ```json
 // cmd/ota

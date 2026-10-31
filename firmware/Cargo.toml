@@ -24,7 +24,10 @@ opt-level = "z"
 
 [dependencies]
 cec-core = { package = "aether-cec-core", path = "../crates/cec-core" }
-aether-proto = { package = "aether-cec-proto", path = "../crates/aether-proto" }
+aether-proto = { package = "aether-cec-proto", path = "../crates/aether-proto", features = ["std"] }
+aether-logic = { path = "../crates/aether-logic" }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 esp-idf-svc = { version = "0.53", features = ["critical-section"] }
 log = "0.4"
 

@@ -8,9 +8,12 @@ version = "0.0.0"
 dependencies = [
  "aether-cec-core",
  "aether-cec-proto",
+ "aether-logic",
  "embuild",
  "esp-idf-svc",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -27,6 +30,17 @@ dependencies = [
  "aether-cec-core",
  "heapless",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aether-logic"
+version = "0.0.0"
+dependencies = [
+ "aether-cec-core",
+ "aether-cec-proto",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
