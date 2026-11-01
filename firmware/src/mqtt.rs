@@ -40,6 +40,8 @@ pub struct Publication<'a, T: ?Sized> {
     pub value: &'a T,
 }
 pub struct MqttLink {
+    // Unregister before client destruction (fields drop in declaration order).
+    _diagnostics: crate::ffi::MqttDiagnostics,
     pub client: EspMqttClient<'static>,
     pub events: Receiver<Message>,
     pub connects: u32,
@@ -84,7 +86,7 @@ impl MqttLink {
             crt_bundle_attach: credentials.tls.then_some(sys::esp_crt_bundle_attach),
             buffer_size: 2048,
             out_buffer_size: 2048,
-            outbox_limit: Some(16 * 1024),
+            outbox_limit: Some(8 * 1024),
             // 6144 is esp-mqtt's default; TLS with the certificate bundle needs
             // more during (re)connect, and a stack overflow here is a `panic` reset.
             task_stack: 10240,
@@ -149,7 +151,9 @@ impl MqttLink {
                 }
             }
         })?;
+        let diagnostics = crate::ffi::MqttDiagnostics::new(&client)?;
         Ok(Self {
+            _diagnostics: diagnostics,
             client,
             events,
             connects: 0,

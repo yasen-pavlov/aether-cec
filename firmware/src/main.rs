@@ -55,8 +55,13 @@ fn main() {
 }
 
 fn recovery(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> ! {
+    let mut stacks_reported = false;
     loop {
         health.poll(false, None, |_| false);
+        if !stacks_reported && ffi::now_us() >= 60_000_000 {
+            ffi::log_stack_watermarks();
+            stacks_reported = true;
+        }
         match console.recv_timeout(Duration::from_millis(100)) {
             Ok(ConsoleCommand::Show) => println!("mode=console-only fw={FW} startup_error"),
             Ok(ConsoleCommand::FactoryReset) => {
@@ -122,8 +127,13 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     let mut hint_at = Instant::now() - Duration::from_secs(30);
     let mut shutdown: Option<Instant> = None;
     let mut observed_bus = (None, None);
+    let mut stacks_reported = false;
     loop {
         net.poll();
+        if !stacks_reported && ffi::now_us() >= 60_000_000 {
+            ffi::log_stack_watermarks();
+            stacks_reported = true;
+        }
         if (secrets.wifi.is_none() || secrets.mqtt.is_none())
             && hint_at.elapsed() >= Duration::from_secs(30)
         {
@@ -492,7 +502,7 @@ fn snapshot<'a>(
     link: Option<&MqttLink>,
     ip: &'a str,
 ) -> Snapshot<'a> {
-    let (heap_free, heap_min) = ffi::heap();
+    let (heap_free, heap_min, heap_largest) = ffi::heap();
     Snapshot {
         fw: FW,
         boot: store.boot,
@@ -504,6 +514,7 @@ fn snapshot<'a>(
         link_count: link.map_or(0, |link| link.connects),
         heap_free,
         heap_min,
+        heap_largest,
         outbox_dropped: link.map_or(0, MqttLink::drops),
         bus: status::BusSnapshot::default(),
     }

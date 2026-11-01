@@ -351,7 +351,7 @@ There is no SNTP client: certificate chain/hostname validation is enabled but
 validity dates are not checked (`CONFIG_MBEDTLS_HAVE_TIME_DATE` unset), avoiding
 a hard NTP dependency. Protocol time always uses the monotonic ESP timer.
 
-The console reader has an explicit 6144-byte stack. A UART0 driver with a
+The console reader has an explicit 12288-byte stack. A UART0 driver with a
 512-byte RX ring backs blocking stdin reads, retaining pasted 200-byte lines.
 The reader sends parsed operations through a four-entry sync channel; main alone
 writes NVS. It never echoes input; responses and EspLogger share UART0.
@@ -374,8 +374,8 @@ diagnostics can include broker URLs or SSIDs, and enables only its own scrubbed
 `aether` application records at info. Errors originating in storage/network
 libraries are never formatted into application logs or console responses.
 
-The ESP-MQTT task has an explicit 6144-byte stack, a 2048-byte I/O buffer and a
-16-KiB outbox. Its callback copies only data messages into a 32-entry channel
+The ESP-MQTT task has an explicit 10240-byte stack, separate 2048-byte input/output
+buffers and an 8-KiB outbox. Its callback copies only data messages into a 32-entry channel
 without blocking while ESP-MQTT holds its internal mutex. Connection state,
 connection generation and the pending shutdown PUBACK id/ack flag are atomic,
 not lossy channel events. Fragmented payloads are bounded to 2048 bytes;
@@ -406,6 +406,20 @@ connected flag; a failed preamble retries without releasing the FIFO. Only real
 FIFO overflow is transferred to `bus::Losses`; offline time alone is not loss.
 Main drains the bus channel every turn, even without MQTT credentials. Start the
 bus task after network/HTTP constructors, immediately before this drain loop.
+
+Memory instrumentation adds `Snapshot.heap_largest: u32` and optional
+`Telemetry.heap_largest: Option<u32>` (old payloads omit it). At 60 seconds,
+main snapshots live tasks using `uxTaskGetSystemState`; ESP-IDF's Xtensa
+`StackType_t` is a byte, so high-water values are already bytes. Keep main's
+32768-byte configured stack until a real boot exercises startup, traffic and
+OTA: serde_json output/NVS input are already heap-backed Vecs, and Bridge
+is boxed on the bus task, not resident on main's stack. The snapshot is bounded
+to 32 tasks, uses no heap allocation, and reports an explicit unavailable code
+if that capacity is exceeded. `ffi::MqttDiagnostics` owns an additional SDK event
+registration because esp-idf-svc 0.53 discards the detailed MQTT error handle.
+Its stable boxed deduplication state is unregistered before client destruction;
+only numeric errors reach the application log. See the dated memory budget in
+`decisions.md` for SDK configuration and allocation bounds.
 
 The 4-MB custom partition table reserves NVS at 0x9000 (0x6000), otadata at
 0xF000 (0x2000), phy_init at 0x11000 (0x1000), and 0x1E0000-byte OTA slots at

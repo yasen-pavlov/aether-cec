@@ -88,7 +88,7 @@ preserves that order and makes gap detection trivial.
 Why QoS 1 on `bus`: Wi-Fi hiccups are the realistic loss case; a lost `tx` outcome today stalls
 standby verification until the 5 s FIFO expiry. With `id` + `seq` duplicates are harmless (host
 dedupes on `(boot, seq)`), so at-least-once is strictly better. The esp-mqtt outbox is bounded
-(`outbox_limit`, 16 KiB); if it overflows esp-mqtt drops the newest event.
+(8 KiB); if it overflows esp-mqtt drops the newest event.
 Failed enqueues and expired outbox messages increment `outbox_dropped`; after
 enqueue succeeds again, the bridge emits one ordered `err kind:"overrun"` with
 the accumulated `dropped` count (including a failed overrun report itself).
@@ -321,6 +321,18 @@ Emitted on change only; current values are mirrored in `status`.
 Counters are per boot, monotonic. Choregos maps `rssi` → `signal_dbm`, `link_count` (MQTT connect
 count this boot) → `link_count`, `t_us/1e6` → `uptime_s`; the `rx.errors` / `tx.arb_lost` deltas feed
 the dashboard bus-health view.
+
+`heap_largest` is the largest contiguous `MALLOC_CAP_8BIT` free block, in bytes
+(optional; older telemetry omits it). Compare it with `heap_free` to distinguish
+fragmentation from total exhaustion. New firmware always includes it.
+At 60 seconds after boot, firmware emits one `stack_hwm task=<name> hwm=<bytes>`
+record per live FreeRTOS task into the serial log and `/api/log`; the measurement
+includes startup's deepest path, not just the current stack depth. Tasks that
+have already exited or start after that snapshot are not represented.
+MQTT reconnect failures emit numeric `mqtt_error` type/ESP/TLS/verification/
+CONNACK/socket codes once per disconnected retry series (reset on connection),
+plus `mqtt_handshake_no_memory` on the first allocator failure in that series.
+No broker address, certificate subject, credentials or payload is logged.
 
 `tx.arb_lost` and `tx.line_error` count **failed attempts**, including failures
 hidden by a later successful attempt, not just the final outcome. The six

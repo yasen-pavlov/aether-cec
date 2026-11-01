@@ -475,6 +475,9 @@ pub struct Telemetry {
     pub heap_free: u32,
     /// Minimum free heap in bytes.
     pub heap_min: u32,
+    /// Largest contiguous 8-bit heap block; absent in older firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heap_largest: Option<u32>,
     /// Receive counters.
     pub rx: RxCounters,
     /// Transmit counters.

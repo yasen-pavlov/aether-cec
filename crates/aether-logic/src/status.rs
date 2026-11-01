@@ -73,6 +73,8 @@ pub struct Snapshot<'a> {
     pub heap_free: u32,
     /// Minimum free heap since boot.
     pub heap_min: u32,
+    /// Largest contiguous 8-bit heap block.
+    pub heap_largest: u32,
     /// Failed outbound publications.
     pub outbox_dropped: u64,
     /// CEC observations, never read from GPIO on the network task.
@@ -114,6 +116,7 @@ pub fn telemetry(snapshot: &Snapshot<'_>) -> Telemetry {
         link_count: snapshot.link_count,
         heap_free: snapshot.heap_free,
         heap_min: snapshot.heap_min,
+        heap_largest: Some(snapshot.heap_largest),
         rx: snapshot.bus.rx.clone(),
         tx: snapshot.bus.tx.clone(),
         queue: QueueCounters {

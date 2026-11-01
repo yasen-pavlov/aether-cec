@@ -240,6 +240,7 @@ fn status_and_telemetry_exact_fields() {
         link_count: 2,
         heap_free: 1000,
         heap_min: 900,
+        heap_largest: 700,
         outbox_dropped: 7,
         bus: status::BusSnapshot::default(),
     };
@@ -259,6 +260,7 @@ fn status_and_telemetry_exact_fields() {
     let telemetry = serde_json::to_value(status::telemetry(&snapshot)).unwrap();
     assert_eq!(telemetry["heap_free"], 1000);
     assert_eq!(telemetry["heap_min"], 900);
+    assert_eq!(telemetry["heap_largest"], 700);
     assert_eq!(telemetry["outbox_dropped"], 7);
     assert_eq!(telemetry["link_count"], 2);
     assert_eq!(telemetry["t_us"], 123);

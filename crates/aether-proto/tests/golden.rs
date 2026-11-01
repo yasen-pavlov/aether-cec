@@ -429,6 +429,33 @@ fn attempt_diagnostics_round_trip_and_accept_older_telemetry() {
 }
 
 #[test]
+fn heap_largest_is_optional_and_round_trips() {
+    let legacy = json!({
+        "t_us": 60_000_000, "boot": 3, "rssi": -58, "link_count": 1,
+        "heap_free": 30000, "heap_min": 16000,
+        "rx": {"frames": 0, "errors": 0, "acked_by_us": 0},
+        "tx": {"host": 0, "local": 0, "ack": 0, "nack": 0, "arb_lost": 0,
+               "line_error": 0, "busy": 0, "rejected": 0, "retransmits": 0},
+        "queue": {"depth": 0, "max": 16}, "outbox_dropped": 0
+    });
+    let parsed: Telemetry = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(parsed.heap_largest, None);
+    assert!(
+        serde_json::to_value(parsed)
+            .unwrap()
+            .get("heap_largest")
+            .is_none()
+    );
+    for largest in [0, 24000, u32::MAX] {
+        let mut current = legacy.clone();
+        current["heap_largest"] = json!(largest);
+        let parsed: Telemetry = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(parsed.heap_largest, Some(largest));
+        round_trip::<Telemetry>(&current.to_string());
+    }
+}
+
+#[test]
 fn reset_reasons_are_exact_and_legacy_status_health_remain_readable() {
     for (reason, spelling) in [
         (ResetReason::PowerOn, "power_on"),

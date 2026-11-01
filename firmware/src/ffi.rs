@@ -19,13 +19,132 @@ pub fn now_us() -> u64 {
     // ESP-IDF guarantees a nonnegative, monotonic microsecond clock.
     unsafe { sys::esp_timer_get_time() as u64 }
 }
-pub fn heap() -> (u32, u32) {
+pub fn heap() -> (u32, u32, u32) {
     // These functions take no pointers and may be called from any task.
     unsafe {
         (
             sys::esp_get_free_heap_size(),
             sys::esp_get_minimum_free_heap_size(),
+            sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) as u32,
         )
+    }
+}
+
+/// Snapshot all tasks alive at 60 s, including SDK tasks. ESP-IDF's stack depth
+/// and high-water APIs use bytes (StackType_t is u8), not upstream port words.
+pub fn log_stack_watermarks() {
+    const MAX_TASKS: usize = 32;
+    let mut tasks = [sys::TaskStatus_t::default(); MAX_TASKS];
+    let count = unsafe {
+        sys::uxTaskGetSystemState(tasks.as_mut_ptr(), MAX_TASKS as u32, core::ptr::null_mut())
+    } as usize;
+    if count == 0 {
+        log::warn!("stack_hwm_unavailable capacity={MAX_TASKS}");
+        return;
+    }
+    // Copy task names before logging: SSE tasks may exit while records are
+    // emitted, so do not keep their TCB-owned name pointers across logger calls.
+    let mut names = [[0_u8; 16]; MAX_TASKS];
+    for (task, name) in tasks[..count].iter().zip(&mut names) {
+        for (index, byte) in name.iter_mut().enumerate() {
+            let ch = unsafe { *task.pcTaskName.add(index) } as u8;
+            if ch == 0 {
+                break;
+            }
+            *byte = if ch.is_ascii_graphic() { ch } else { b'?' };
+        }
+    }
+    for (task, name) in tasks[..count].iter().zip(&names) {
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        let name = core::str::from_utf8(&name[..end]).unwrap_or("unknown");
+        log::info!("stack_hwm task={name} hwm={}", task.usStackHighWaterMark);
+    }
+}
+
+/// The safe wrapper currently replaces MQTT_EVENT_ERROR with a generic error.
+/// Subscribe to the supported C event API instead; retain only numeric codes.
+pub struct MqttDiagnostics {
+    client: sys::esp_mqtt_client_handle_t,
+    reported: Box<std::sync::atomic::AtomicU32>,
+}
+impl MqttDiagnostics {
+    pub fn new(
+        client: &esp_idf_svc::mqtt::client::EspMqttClient<'_>,
+    ) -> Result<Self, sys::EspError> {
+        use esp_idf_svc::handle::RawHandle;
+        let diagnostics = Self {
+            client: client.handle(),
+            reported: Box::new(std::sync::atomic::AtomicU32::new(0)),
+        };
+        sys::esp!(unsafe {
+            sys::esp_mqtt_client_register_event(
+                diagnostics.client,
+                sys::esp_mqtt_event_id_t_MQTT_EVENT_ANY,
+                Some(mqtt_diagnostic),
+                (&*diagnostics.reported as *const std::sync::atomic::AtomicU32)
+                    .cast_mut()
+                    .cast(),
+            )
+        })?;
+        Ok(diagnostics)
+    }
+}
+impl Drop for MqttDiagnostics {
+    fn drop(&mut self) {
+        unsafe {
+            sys::esp_mqtt_client_unregister_event(
+                self.client,
+                sys::esp_mqtt_event_id_t_MQTT_EVENT_ANY,
+                Some(mqtt_diagnostic),
+            );
+        }
+    }
+}
+unsafe extern "C" fn mqtt_diagnostic(
+    arg: *mut core::ffi::c_void,
+    _: sys::esp_event_base_t,
+    id: i32,
+    data: *mut core::ffi::c_void,
+) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let reported = unsafe { &*arg.cast::<AtomicU32>() };
+    if id == sys::esp_mqtt_event_id_t_MQTT_EVENT_CONNECTED as i32 {
+        reported.store(0, Ordering::Relaxed);
+        return;
+    }
+    if id != sys::esp_mqtt_event_id_t_MQTT_EVENT_ERROR as i32 {
+        return;
+    }
+    let event = unsafe { &*data.cast::<sys::esp_mqtt_event_t>() };
+    let Some(error) = (unsafe { event.error_handle.as_ref() }) else {
+        return;
+    };
+    // mbedTLS can combine high-level and low-level errors. Match either part,
+    // including SSL/X509/PK/PEM/ECP and MPI/ASN1 allocator failures.
+    let tls = error.esp_tls_stack_err.unsigned_abs();
+    let oom = error.esp_tls_last_esp_err == sys::ESP_ERR_NO_MEM
+        || error.esp_transport_sock_errno == sys::ENOMEM as i32
+        || matches!(
+            tls & 0xff80,
+            0x7f00 | 0x2880 | 0x3f80 | 0x1180 | 0x4d80 | 0x6180 | 0x5180 | 0x3400 | 0x5780
+        )
+        || matches!(tls & 0x7f, 0x10 | 0x6a | 0x17);
+    let previous = reported.fetch_or(if oom { 3 } else { 1 }, Ordering::Relaxed);
+    if previous & 1 == 0 {
+        log::warn!(
+            "mqtt_error type={} esp={} tls={} verify={} connack={} errno={} oom={}",
+            error.error_type,
+            error.esp_tls_last_esp_err,
+            error.esp_tls_stack_err,
+            error.esp_tls_cert_verify_flags,
+            error.connect_return_code,
+            error.esp_transport_sock_errno,
+            u8::from(oom)
+        );
+    }
+    // Do not hide a later OOM behind an earlier non-memory transport failure.
+    if oom && previous & 2 == 0 {
+        log::warn!("mqtt_handshake_no_memory tls={}", error.esp_tls_stack_err);
     }
 }
 pub fn restart() -> ! {

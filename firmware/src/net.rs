@@ -42,6 +42,13 @@ impl Net {
                 };
                 wifi.set_configuration(&Configuration::Client(config))?;
                 wifi.start()?;
+                // Tasmota parity (`WiFi.setSleep(false)`): IDF's default
+                // WIFI_PS_MIN_MODEM wakes the modem every DTIM interval; the
+                // bench showed ~1 ms edge-ISR stalls at that cadence
+                // (docs/decisions.md 2026-11-01). The bridge is mains powered.
+                esp_idf_svc::sys::esp!(unsafe {
+                    esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_NONE)
+                })?;
                 Ok(())
             })();
             if configured.is_err() {
