@@ -212,12 +212,18 @@ entropy source enabled before Wi-Fi/ADC startup, and stored in its own
 HTTP and MQTT never do. `set token <64 hex>` replaces only the token key immediately,
 without a restart. Do not paste the token into shared transcripts or shell history.
 
-Open `http://<bridge>/` for the embedded, dependency-free UI. Enter the token
-once; it is retained in this browser's localStorage until “Forget token”.
-The UI provides status, live SSE bus/OTA events, editable configuration, log tail,
-and firmware upload. It uses WebCrypto SHA-256 when available and a local JS
-SHA-256 implementation on LAN HTTP (where browsers disable WebCrypto).
-SSE uses authenticated fetch, not EventSource/query-string credentials.
+Open `http://<bridge>/` for the embedded console (one 64 KiB HTML file, no
+dependencies, no build step; design in `docs/design/aether-ui/`). Enter the
+token once; it is retained in this browser's localStorage until “Forget”.
+The page is a live bus monitor (every `rx`/`tx`/`err`/`line` event decoded with
+CEC role and learned OSD names, pause/filter/copy, 500-row ring) with a side rail
+for sending frames (presets, outcome correlated by id), telemetry counters with
+deltas, the log tail, a configuration form with per-field errors and a raw-JSON
+mode, and OTA upload with progress and a post-reboot verdict. Every value from
+the device or the bus is rendered as text, never as HTML. It uses WebCrypto
+SHA-256 when available and a local JS SHA-256 implementation on LAN HTTP (where
+browsers disable WebCrypto). SSE uses authenticated fetch, not
+EventSource/query-string credentials, with LF/CRLF framing and bounded reconnect.
 HTTP status snapshots refresh at most once per second. Restart/reset always reboot
 within main's two-second shutdown deadline (or earlier on offline PUBACK), even
 if an HTTP waiter times out; the handler's response grace is only a speed-up.

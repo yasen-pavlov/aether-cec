@@ -629,11 +629,17 @@ are intentionally retained, not drained into transmissions during the upload.
 `lru_purge_enable=true`, a 16384-byte httpd stack and 1024-byte maximum request
 headers. Its exact method/path table is `aether_logic::http::route`; wildcard
 handlers return JSON `not_found` for unknown paths. The embedded `index.html`
-includes its CSS/vanilla JS; no assets, dependencies or build step are needed.
-The UI uses authenticated fetch streams (no token in URLs), storing the token
-in localStorage. WebCrypto SHA-256 is preferred; because port-80 LAN origins are
-not secure contexts in most browsers, a local JS SHA-256 fallback keeps upload
-functional there.
+(≤ 64 KiB, the console designed in `docs/design/aether-ui/`) includes its
+CSS/vanilla JS; no assets, dependencies or build step are needed. It renders all
+device- and bus-derived strings through `textContent`/DOM attributes (OSD names
+are attacker-controlled bytes from the bus), parses SSE incrementally with LF and
+CRLF framing, holds one stream with bounded reconnect backoff, sends config as a
+changed-field patch without `node`, and persists an OTA attempt record before the
+upload so a lost response is reconciled from `/healthz` and `/api/log` after the
+reboot. The UI uses authenticated fetch streams (no token in URLs), storing the
+token in localStorage. WebCrypto SHA-256 is preferred; because port-80 LAN
+origins are not secure contexts in most browsers, a local JS SHA-256 fallback
+keeps upload functional there.
 
 Normal JSON HTTP bodies are bounded to 2048 bytes. A four-entry command mailbox
 hands operations to main, which calls `commands::plan` and the same executor

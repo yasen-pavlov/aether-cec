@@ -1,34 +1,854 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aether</title>
-<style>body{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;background:#101820;color:#e7eef5}h1,h2{color:#80d6ce}input,button,textarea{font:inherit;padding:.5rem;margin:.3rem;background:#203040;color:inherit;border:1px solid #718393}button{cursor:pointer}textarea{width:95%;min-height:20rem}pre{overflow:auto;max-height:25rem;white-space:pre-wrap;word-break:break-word;background:#182632;padding:1rem}#message{color:#ffd18a}label{display:block}</style>
-<h1>Aether HDMI-CEC bridge</h1>
-<form id="auth"><label>API token <input id="token" type="password" autocomplete="off" size="40" required></label><button>Connect / save token</button><button type="button" id="forget">Forget token</button></form><p id="message" role="status"></p>
-<h2>Status</h2><pre id="status">Connecting…</pre><button id="ping">Ping</button><button id="restart">Restart</button>
-<h2>Live bus / OTA events</h2><pre id="events"></pre>
-<h2>Configuration</h2><p>Edit the effective configuration JSON; node and credentials are serial-only.</p><form id="config"><textarea id="cfg" aria-label="Configuration JSON"></textarea><button>Save configuration</button></form>
-<h2>Push OTA</h2><form id="ota"><input type="file" id="image" accept=".bin" required><button>Upload verified image</button></form><p>Upload the ESP-IDF app image, not a merged flash image. MQTT/status must succeed within 60 seconds after boot or the old image is restored.</p>
-<h2>Diagnostic tail</h2><button id="logs">Refresh log</button><pre id="log"></pre>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Aether</title>
+<style>
+:root{--bg:#212121;--sv:#323232;--ol:#474747;--on:#b0bec5;--onv:#8c8b8b;--pri:#ff9800;--sec:#82aaff;--ter:#c792ea;--hov:#80cbc4;--err:#ff5370;--onp:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif;--b:1px solid #474747;--fm:13px/20px var(--mono);--fs:12px/16px var(--sans);--fc:12px/16px var(--mono);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--on);font:14px/20px var(--sans);font-variant-numeric:tabular-nums;overflow:hidden}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--sec)}a:hover{color:var(--hov)}
+:focus-visible{outline:2px solid var(--pri);outline-offset:1px}
+h1,h3{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+code{font:var(--fm)}
+[hidden]{display:none!important}
+.grow{flex:1 1 auto}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 320px;grid-template-rows:auto auto minmax(0,1fr);grid-template-areas:"top top" "mon tabs" "mon rail";column-gap:12px;height:100vh;height:100dvh;min-height:480px;padding:0 12px 12px}
+.top{grid-area:top;margin:0 -12px 12px}
+.head{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;min-height:44px;padding:4px 12px;border-bottom:var(--b)}
+.hk{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.hk>span:first-child{font:var(--fs);color:var(--onv)}
+.hk>span:last-child{font:var(--fm)}
+.hk>.v-ok{color:var(--hov)}
+.hk>.v-dim,.stale .hk>span:last-child{color:var(--onv)}
+.hk>.v-bad{padding:0 5px;border-radius:6px;background:var(--err);color:var(--onp);font-size:12px}
+.hk>.v-wait{padding:0 5px;border:1px solid var(--pri);border-radius:6px;color:var(--pri);font-size:12px;line-height:18px}
+.brand{font:600 14px/20px var(--mono)}
+.st{display:flex;align-items:center;gap:6px;font:var(--fc);color:var(--pri);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;border:2px solid currentColor}
+.st.live .dot{border:0;background:currentColor;animation:pulse 2s ease-in-out infinite}
+.st.none{color:var(--onv)}
+@keyframes pulse{50%{opacity:.45}}
+.tok{display:flex;align-items:center;gap:8px}
+.tok label{font:var(--fs);color:var(--onv)}
+.tok input{width:112px;height:28px;padding:0 8px;background:var(--sv);border:var(--b);border-radius:6px;font:var(--fm)}
+.tok input.want{width:220px;border:2px solid var(--pri)}
+input::placeholder,textarea::placeholder{color:var(--on);opacity:1}
+.more{display:none;width:44px;height:43px;margin:-4px -12px -4px 0;background:none;border:0;cursor:pointer}
+.more[aria-expanded=true] svg{transform:rotate(180deg)}
+.band{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:8px 12px;border-bottom:var(--b)}
+.band strong{font:600 14px/20px var(--sans)}
+.band .txt{flex:1 1 auto;min-width:0}
+.band .mono{font:var(--fm);word-break:break-word}
+.b-err{background:var(--err);border-color:var(--err);color:var(--onp)}
+.b-err .btn{border-color:var(--onp);color:var(--onp)}
+.b-n{background:var(--sv)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;background:none;border:var(--b);border-radius:6px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--hov);color:var(--hov)}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:var(--onp);font-weight:600}
+.btn.dng{background:var(--err);border-color:var(--err);color:var(--onp);font-weight:600}
+.btn:disabled,.btn.pri:disabled,.btn.dng:disabled{background:var(--ol);border-color:var(--ol);color:var(--on);cursor:default;font-weight:400}
+.btn.big{height:32px}
+.btn.on{border-color:var(--pri);color:var(--pri)}
+.mon{grid-area:mon;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;border:var(--b);border-radius:10px;overflow:hidden}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:44px;padding:8px;background:var(--sv);border-bottom:var(--b)}
+.cnt{font:var(--fc);white-space:nowrap}
+.seg{display:flex;gap:4px}
+.tg{height:28px;padding:0 8px;background:none;border:var(--b);border-radius:6px;cursor:pointer;font:var(--fc)}
+.tg[aria-pressed=true]{background:var(--ol)}
+.tg:hover{border-color:var(--hov)}
+.mini{display:flex;align-items:center;gap:6px;font:var(--fs);white-space:nowrap}
+.mini select,.mini input{height:28px;padding:0 6px;background:var(--sv);border:var(--b);border-radius:6px;font:var(--fm)}
+.mini select{max-width:140px}.mini input{width:44px;text-transform:uppercase}
+.menu{position:relative}
+.menu summary{list-style:none}.menu summary::-webkit-details-marker{display:none}
+.pop{position:absolute;right:0;top:32px;z-index:5;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--sv);border:var(--b);border-radius:6px}
+.row{display:grid;grid-template-columns:48px 80px 40px 264px 104px minmax(0,1fr) 108px;grid-template-areas:"q t k r h d s";column-gap:8px;align-items:center;height:24px;padding:0 8px;font:13px/24px var(--mono);white-space:nowrap}
+.row>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.row.hd{flex:none;background:var(--sv);border-bottom:var(--b);font:12px/24px var(--sans)}
+.seq{grid-area:q;padding:0;background:none;border:0;color:var(--onv);font:inherit;text-align:left;cursor:pointer}
+.seq:focus-visible{outline-offset:-2px}
+#list .row:hover,.row.open{box-shadow:inset 0 0 0 1px var(--hov)}
+.t{grid-area:t;color:var(--onv)}
+.k{grid-area:k}.k-rx{color:var(--sec)}.k-tx{font-weight:600}.k-loc{color:var(--ter)}
+.k-err,.k-line{justify-self:start;padding:0 3px;height:18px;line-height:18px;font-size:12px;border-radius:4px;background:var(--err);color:var(--onp)}
+.k-lineok{color:var(--hov)}
+.rt{grid-area:r;display:grid;grid-template-columns:2ch 13ch 1ch 2ch minmax(0,1fr);column-gap:.6ch}
+.rt>*{overflow:hidden;text-overflow:ellipsis}.n{text-align:right}.ar{color:var(--onv)}
+.hx{grid-area:h}.args{margin-left:1ch;color:var(--onv)}
+.d{grid-area:d}.d.bad{color:var(--err)}.d.okc{color:var(--hov)}
+.rep{margin-right:1ch;color:var(--ter);text-decoration:none}
+.rep:hover{text-decoration:underline;color:var(--ter)}
+.s{grid-area:s;display:flex;align-items:center}
+.row.poll .rt,.row.poll .d,.row.poll .hx{color:var(--onv)}
+.x{display:none!important}
+.div{display:flex;align-items:center;gap:12px;height:24px;padding:0 8px;font:12px/24px var(--mono);color:var(--onv)}
+.div::before,.div::after{content:"";flex:1;height:1px;background:var(--ol)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:var(--fc);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hov)}
+.s-soft{padding:0;border:0;color:var(--err)}
+.s-bad{background:var(--err);border-color:var(--err);color:var(--onp)}
+.s-n{border-color:var(--ol)}
+.s-rej{border-color:var(--err);color:var(--err)}
+.s-send{border-color:var(--pri);color:var(--pri)}
+.s-send::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--pri);animation:pulse 1s ease-in-out infinite}
+.fl-send{box-shadow:inset 0 0 0 1px var(--pri)}
+.fl{animation:fl 2.5s ease-out both}
+.fl-ok{--fl:var(--hov)}.fl-bad{--fl:var(--err)}.fl-n{--fl:var(--on)}
+@keyframes fl{0%,40%{box-shadow:inset 0 0 0 1px var(--fl)}to{box-shadow:inset 0 0 0 1px transparent}}
+.det{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 16px;padding:8px 8px 12px 64px;border-bottom:var(--b);font:var(--fm)}
+.det .all{grid-column:1/-1;word-break:break-all}
+.det b{margin-right:6px;font:12px/20px var(--sans);color:var(--onv)}
+.scroll{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column-reverse;overflow-anchor:none}
+.empty{position:absolute;left:0;right:0;top:120px;padding:24px;text-align:center;color:var(--onv)}
+.empty .btn{margin-top:8px}
+.pill{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);height:32px;box-shadow:0 0 0 4px var(--bg)}
+.tabs{grid-area:tabs;display:flex;padding:0 4px;background:var(--sv);border:var(--b);border-bottom:0;border-radius:10px 10px 0 0}
+.tab{flex:1;height:44px;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;cursor:pointer;font-size:13px}
+.tab:hover{color:var(--hov)}
+.tab[aria-pressed=true]{color:var(--pri);border-bottom-color:var(--pri);font-weight:600}
+.tab.pb{display:none}
+.rail{grid-area:rail;min-height:0;overflow:auto;padding:12px;background:var(--sv);border:var(--b);border-top-color:var(--sv);border-radius:0 0 10px 10px}
+.pane,.stack{display:flex;flex-direction:column;gap:12px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld>label,.fld>span:first-child{display:flex;align-items:center;gap:6px;font:var(--fs)}
+.fld.ch>:first-child::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--pri)}
+.inp{width:100%;height:32px;padding:0 8px;background:var(--sv);border:var(--b);border-radius:6px;font:var(--fm)}
+.inp:hover{border-color:var(--hov)}
+.inp:disabled{border-style:dashed}
+.bad .inp,.inp.bad{border:2px solid var(--err)}
+.hint{font:var(--fs)}
+.dec{min-height:20px;font:var(--fm);overflow-wrap:anywhere}
+.warn{align-self:flex-start;max-width:100%;padding:2px 6px;border-radius:6px;background:var(--err);color:var(--onp);font:var(--fs)}
+.pres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.pre{display:flex;gap:6px;align-items:center;height:28px;padding:0 6px;background:none;border:var(--b);border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap;overflow:hidden}
+.pre:hover{border-color:var(--hov);color:var(--hov)}
+.pre b{font:var(--fc)}
+.sep{height:1px;margin:0;background:var(--ol);border:0}
+.res{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-height:20px;font:var(--fm)}
+.lnk{padding:0;background:none;border:0;color:var(--sec);text-decoration:underline;cursor:pointer;font:inherit}
+.lnk:hover{color:var(--hov)}
+.ln2{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.well{background:var(--bg);border:var(--b);border-radius:6px;overflow:hidden}
+.ct{display:grid;grid-template-columns:minmax(0,1fr) 72px 44px;column-gap:4px;padding:0 8px;font:13px/24px var(--mono)}
+.ct>*{text-align:right;white-space:nowrap}.ct>:first-child{text-align:left;overflow:hidden;text-overflow:ellipsis}
+.ct.th{background:var(--sv);border-bottom:var(--b);font:12px/24px var(--sans)}
+.ct.grp{padding-top:4px;font:600 12px/20px var(--sans)}
+.neg{color:var(--err)}.zero{color:var(--onv)}
+.lg{padding:4px 8px;border-bottom:1px solid var(--sv);font:var(--fm)}
+.lg:last-child{border-bottom:0}
+.lgt{display:flex;gap:8px;color:var(--onv)}
+.lv-warn{color:var(--pri)}.lv-error{color:var(--err)}
+.msg{word-break:break-word}
+.mode{display:flex;gap:4px}
+.mode button{flex:1;height:28px;background:none;border:var(--b);border-radius:6px;cursor:pointer;font-size:12px}
+.mode button[aria-pressed=true]{background:var(--ol)}
+.tset{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tset.six{grid-template-columns:repeat(2,minmax(0,1fr))}
+.tv{height:28px;background:none;border:var(--b);border-radius:6px;cursor:pointer;font:var(--fc)}
+.tv:hover{border-color:var(--hov)}
+.tv[aria-pressed=true]{background:var(--on);border-color:var(--on);color:var(--bg)}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px}
+.ro{display:flex;justify-content:space-between;gap:8px;font:12px/20px var(--sans)}
+.ro b{font:var(--fm);overflow-wrap:anywhere;text-align:right}
+.foot{position:sticky;bottom:-12px;z-index:2;display:flex;align-items:center;gap:8px;margin:0 -12px;padding:8px 12px;background:var(--sv);border-top:var(--b);border-bottom:var(--b)}
+.un{font:var(--fm);color:var(--pri)}
+.code{display:block;width:100%;height:480px;padding:8px;background:var(--bg);border:var(--b);border-radius:6px;font:var(--fm);resize:vertical}
+.pong{font:var(--fm);color:var(--hov)}
+.rowc{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ota{display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--bg);border:var(--b);border-radius:10px}
+.ota .chip{align-self:flex-start;height:20px;padding:0 6px;line-height:18px}
+.c-ter{background:var(--ter);color:var(--onp)}.c-idle{border-color:var(--ol)}.c-ok{padding:0;color:var(--hov)}.c-bad{background:var(--err);color:var(--onp)}
+.file{font:var(--fm);word-break:break-all}
+.pbar{height:8px;background:var(--bg);border:var(--b);border-radius:4px;overflow:hidden}
+.pbar>span{display:block;height:100%;width:0;background:var(--ter)}
+#toast{position:fixed;left:50%;bottom:16px;z-index:9;transform:translateX(-50%);padding:6px 12px;background:var(--sv);border:var(--b);border-radius:6px;font-size:13px}
+#toast:empty{display:none}
+@media (max-width:720px){
+.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"top" "main" "tabs";padding:0;column-gap:0}
+.top{margin:0}
+.head{gap:4px 12px;flex-wrap:nowrap;overflow:hidden}
+.head:not(.open) .wide{display:none}
+.head.open{flex-wrap:wrap;padding-right:44px}
+.head.open .more{position:absolute;right:12px;top:4px}
+.more{display:block}
+.mon,.rail{grid-area:main;border:0;border-radius:0}
+.app[data-view=bus] .rail,.app[data-view=rail] .mon{display:none}
+.bar{order:3;flex-wrap:nowrap;overflow-x:auto;border-top:var(--b);border-bottom:0}
+.bar h1,.cnt{display:none}
+.tg,.btn,.mini select,.mini input,.inp,.pre,.tv,.tok input{height:44px}
+.tg{min-width:44px}
+.row{grid-template-columns:40px minmax(0,1fr) auto;grid-template-areas:"k r s" "h d t";height:48px;padding:0 12px;line-height:22px;border-bottom:1px solid var(--sv)}
+.row.hd{display:none}
+.seq{grid-area:k;color:transparent}.args{display:none}
+.rt{grid-template-columns:auto auto auto auto minmax(0,1fr);justify-content:start}
+.det{padding-left:12px}
+.pill{bottom:68px;height:44px}
+.empty{top:40px}
+.tabs{border:0;border-top:var(--b);border-radius:0}
+.tab{height:52px;font-size:12px;border-bottom:0;border-top:2px solid transparent}
+.tab[aria-pressed=true]{border-top-color:var(--pri)}
+.tab.pb{display:block}
+.tok{flex:1 1 100%}
+.tok input,.tok input.want{width:auto;flex:1;min-width:0}
+}
+@media (prefers-reduced-motion:reduce){.st.live .dot,.s-send::before,.fl{animation:none}}
+</style>
+</head>
+<body>
+<div class="app" id="app" data-tab="Send" data-view="bus">
+<div class="top">
+<header class="head" id="head">
+<div class="st" id="live"><span class="dot"></span><span id="liveT">connecting</span></div>
+<span class="brand" id="hNode">aether</span>
+<div class="hk"><span>bus</span><span id="hBus">—</span></div>
+<div class="hk"><span>LA</span><span id="hLa">—</span></div>
+<div class="hk wide"><span>PA</span><span id="hPa">—</span></div>
+<div class="hk wide" id="hHpdW" hidden><span>HPD</span><span id="hHpd">—</span></div>
+<div class="hk"><span>RSSI</span><span id="hRssi">—</span></div>
+<div class="hk wide"><span>up</span><span id="hUp">—</span></div>
+<div class="hk wide"><span>boot</span><span id="hBoot">—</span></div>
+<div class="hk wide"><span>fw</span><span id="hFw">—</span></div>
+<span class="grow wide"></span>
+<form class="tok wide" id="tokF"><label for="tok">Token</label><input id="tok" type="password" autocomplete="off" spellcheck="false" placeholder="paste token"><button class="btn" id="tokS">Save</button><button class="btn" type="button" id="tokX">Forget</button></form>
+<button class="more" id="more" aria-expanded="false" aria-label="Show full status"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+</header>
+<div id="bands" role="status" aria-live="polite"></div>
+</div>
+<section class="mon" aria-label="Bus monitor">
+<div class="bar">
+<h1>Bus</h1><span class="cnt" id="cnt">0 of 0</span>
+<div class="seg" role="group" aria-label="Show event kinds" id="kinds"></div>
+<label class="mini">Device <select id="fDev"><option value="">any</option></select></label>
+<label class="mini">Opcode <input id="fOp" maxlength="2" spellcheck="false" autocomplete="off"></label>
+<span class="grow"></span>
+<button class="btn" id="fRes" hidden>Reset filters</button>
+<button class="btn" id="clr">Clear</button>
+<details class="menu" id="cpM"><summary class="btn">Copy</summary><div class="pop"><button class="btn" data-c="t">Visible rows as text</button><button class="btn" data-c="j">Visible rows as JSON</button></div></details>
+<button class="btn" id="pause" aria-pressed="false"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path id="pIc" d="M2 1h2v8H2zM6 1h2v8H6z" fill="currentColor"/></svg><span id="pT">Pause</span></button>
+</div>
+<div class="row hd" aria-hidden="true"><span style="grid-area:q">seq</span><span style="grid-area:t">uptime s</span><span style="grid-area:k">kind</span><span style="grid-area:r">from → to</span><span style="grid-area:h">hex</span><span style="grid-area:d">decoded</span><span style="grid-area:s">status</span></div>
+<div class="scroll" id="sc"><div id="list"></div></div>
+<div class="empty" id="empty"></div>
+<button class="btn pri pill" id="pill" hidden></button>
+</section>
+<nav class="tabs" aria-label="Panels" id="tabs"><button class="tab pb" data-t="Bus">Bus</button><button class="tab" data-t="Send">Send</button><button class="tab" data-t="Counters">Counters</button><button class="tab" data-t="Log">Log</button><button class="tab" data-t="Config">Config</button><button class="tab" data-t="OTA">OTA</button></nav>
+<aside class="rail" id="rail">
+<form class="pane" id="p-Send" novalidate>
+<div class="two">
+<div class="fld"><label for="sTo">To</label><select id="sTo" class="inp"></select></div>
+<div class="fld"><label for="sRe">Retries</label><select id="sRe" class="inp"><option value="">default, 1</option><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+</div>
+<div class="fld"><label for="sData">Data, hex</label><input id="sData" class="inp" value="8F" placeholder="empty = poll" spellcheck="false" autocomplete="off" aria-describedby="sDec"><span id="sDec" class="dec"></span></div>
+<button class="btn pri big" id="sGo">Send</button>
+<span class="hint" id="sWhy" hidden></span>
+<div class="res" id="sRes" aria-live="polite"></div>
+<hr class="sep">
+<div class="fld"><span>Presets fill the form; nothing is sent until Send.</span><div class="pres" id="pres"></div></div>
+</form>
+<div class="pane" id="p-Counters" hidden>
+<div class="ln2"><p class="hint" id="cAgo">No sample yet.</p><button class="btn" id="cRef">Refresh</button></div>
+<div class="well" id="cTab"></div>
+</div>
+<div class="pane" id="p-Log" hidden>
+<div class="ln2"><label class="chk"><input type="checkbox" id="lAuto" checked>Auto-refresh, 10 s</label><button class="btn" id="lRef">Refresh</button></div>
+<p class="hint" id="lHint">Last 64 lines, newest first.</p>
+<div class="well" id="lList"></div>
+</div>
+<form class="pane" id="p-Config" hidden novalidate>
+<div class="mode" role="group" aria-label="Edit mode"><button type="button" id="mForm" aria-pressed="true">Form</button><button type="button" id="mRaw" aria-pressed="false">Raw JSON</button></div>
+<div class="warn" id="cErr" role="alert" hidden></div>
+<div class="stack" id="cForm"></div>
+<div class="stack" id="cRaw" hidden><label class="hint" for="raw">Effective configuration, node left out</label><textarea id="raw" class="code" spellcheck="false"></textarea></div>
+<div class="foot" id="foot" hidden><span class="un" id="dirtyN"></span><span class="grow"></span><button class="btn" type="button" id="cDis">Reset</button><button class="btn pri" id="cSave">Save</button></div>
+<hr class="sep">
+<h3>Commands</h3>
+<div class="rowc"><button class="btn" type="button" id="ping">Ping</button><span class="pong" id="pong" aria-live="polite"></span></div>
+<div class="rowc"><button class="btn" type="button" id="rst">Restart</button><span class="hint">The stream drops and the page reconnects on its own.</span></div>
+<button class="btn" type="button" id="rsOpen" style="align-self:flex-start" aria-expanded="false">Reset to CEC defaults</button>
+<div class="stack" id="rsBox" hidden>
+<div class="fld"><label for="rsIn" id="rsLab">Type the node name to confirm</label><input id="rsIn" class="inp" spellcheck="false" autocomplete="off"></div>
+<button class="btn dng" type="button" id="rsGo" disabled>Reset and restart</button>
+<span class="hint">Keeps node, Wi-Fi and MQTT credentials.</span>
+</div>
+</form>
+<form class="pane" id="p-OTA" hidden novalidate>
+<div class="fld"><label for="oFile">App image</label><input id="oFile" type="file" accept=".bin,application/octet-stream" style="font:var(--fc)"></div>
+<p class="hint">Upload the ESP-IDF app image, not a merged flash image. During upload the bus goes passive: frames to this bridge are NACKed for about 15 s.</p>
+<button class="btn pri big" id="oGo" disabled>Hash and upload</button>
+<hr class="sep">
+<div class="ota">
+<span class="chip c-idle" id="oSt">idle</span>
+<span class="file" id="oFi" hidden></span>
+<div class="pbar" id="oBar" hidden><span id="oPb"></span></div>
+<p class="hint" id="oHint" aria-live="polite"></p>
+<button class="btn" type="button" id="oDone" hidden>Done</button>
+</div>
+<div class="ro"><span>Running</span><b id="oFw">—</b></div>
+<div class="ro"><span>Boot</span><b id="oBoot">—</b></div>
+</form>
+</aside>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script>
 'use strict';
-const $=id=>document.getElementById(id); let token=localStorage.getItem('aether-token')||'', stream;
-$('token').value=token;
-const report=text=>$('message').textContent=text;
-async function api(path,options={}){const r=await fetch(path,{...options,headers:{Authorization:'Bearer '+token,...options.headers}});if(!r.ok){let e;try{e=await r.json()}catch{e={reason:'HTTP '+r.status}}throw Error(e.reason||'HTTP '+r.status)}return r}
-const json=(path,body,method='POST')=>api(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
-function append(event,data){const lines=$('events').textContent.split('\n').filter(Boolean);lines.push(event+': '+data);$('events').textContent=lines.slice(-128).join('\n');}
-async function events(){if(stream)stream.abort();const controller=new AbortController();stream=controller;while(!controller.signal.aborted){try{const r=await api('/api/events',{signal:controller.signal});const reader=r.body.getReader(),decoder=new TextDecoder();let pending='';while(true){const part=await reader.read();if(part.done)break;pending+=decoder.decode(part.value,{stream:true});let end;while((end=pending.indexOf('\n\n'))>=0){const block=pending.slice(0,end);pending=pending.slice(end+2);const type=block.split('\n').find(s=>s.startsWith('event: '))?.slice(7);const data=block.split('\n').find(s=>s.startsWith('data: '))?.slice(6);if(type){append(type,data);if(type==='status')$('status').textContent=JSON.stringify(JSON.parse(data),null,2)}}}}catch(e){if(controller.signal.aborted)return;report('Event stream: '+e.message)}await new Promise(r=>setTimeout(r,2000))}}
-async function refresh(){const [status,cfg,logs]=await Promise.all(['/api/status','/api/cfg','/api/log'].map(p=>api(p).then(r=>r.json())));$('status').textContent=JSON.stringify(status,null,2);$('cfg').value=JSON.stringify(cfg,null,2);$('log').textContent=JSON.stringify(logs,null,2)}
-async function connect(){try{await refresh();report('Connected');events()}catch(e){report(e.message)}}
-$('auth').onsubmit=e=>{e.preventDefault();token=$('token').value.trim();localStorage.setItem('aether-token',token);connect()};
-$('forget').onclick=()=>{localStorage.removeItem('aether-token');token='';$('token').value='';stream?.abort();report('Token removed from this browser')};
-const id=()=>('w-'+Date.now().toString(36));
-$('config').onsubmit=async e=>{e.preventDefault();try{const body=JSON.parse($('cfg').value);delete body.node;body.id=id();report(JSON.stringify(await json('/api/cfg',body,'PUT')));await refresh()}catch(e){report(e.message)}};
-$('ping').onclick=async()=>{try{report(JSON.stringify(await json('/api/cmd/ping',{id:id(),echo:'web'})))}catch(e){report(e.message)}};
-$('restart').onclick=async()=>{try{report(JSON.stringify(await json('/api/cmd/restart',{id:id()})))}catch(e){report(e.message)}};
-$('logs').onclick=async()=>{try{$('log').textContent=JSON.stringify(await api('/api/log').then(r=>r.json()),null,2)}catch(e){report(e.message)}};
-// WebCrypto is preferred. LAN HTTP is not a secure context in most browsers,
-// so use a small local SHA-256 implementation there (no external code/services).
-function sha256(bytes){const k=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];const padded=new Uint8Array(Math.ceil((bytes.length+9)/64)*64);padded.set(bytes);padded[bytes.length]=128;const view=new DataView(padded.buffer);view.setUint32(padded.length-4,bytes.length*8);const rr=(x,n)=>(x>>>n)|(x<<(32-n));for(let offset=0;offset<padded.length;offset+=64){const w=new Uint32Array(64);for(let i=0;i<16;i++)w[i]=view.getUint32(offset+i*4);for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2];w[i]=(w[i-16]+(rr(a,7)^rr(a,18)^(a>>>3))+w[i-7]+(rr(b,17)^rr(b,19)^(b>>>10)))>>>0}let [a,b,c,d,e,f,g,j]=h;for(let i=0;i<64;i++){const t=(j+(rr(e,6)^rr(e,11)^rr(e,25))+((e&f)^(~e&g))+k[i]+w[i])>>>0,u=((rr(a,2)^rr(a,13)^rr(a,22))+((a&b)^(a&c)^(b&c)))>>>0;j=g;g=f;f=e;e=(d+t)>>>0;d=c;c=b;b=a;a=(t+u)>>>0}h=h.map((v,i)=>(v+[a,b,c,d,e,f,g,j][i])>>>0)}return h.map(v=>v.toString(16).padStart(8,'0')).join('')}
-$('ota').onsubmit=async e=>{e.preventDefault();try{const file=$('image').files[0];if(!file)throw Error('Select an app image');report('Hashing image…');const bytes=await file.arrayBuffer();const digest=crypto.subtle?Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join(''):sha256(new Uint8Array(bytes));report('Uploading…');const result=await api('/api/ota',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Sha256':digest},body:bytes}).then(r=>r.json());report('Accepted '+result.id+'; rebooting. Watch confirmed / rolled_back in events.')}catch(e){report(e.message)}};
-if(token)connect();else fetch('/healthz').then(r=>r.json()).then(v=>$('status').textContent=JSON.stringify(v,null,2)).catch(e=>report(e.message));
-</script></html>
+const $=id=>document.getElementById(id),app=$('app'),LS=localStorage,mq=matchMedia('(max-width:720px)');
+const T=(id,s)=>$(id).textContent=s,ap=(e,v)=>e.setAttribute('aria-pressed',v);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const E=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e},A=(p,...c)=>(p.append(...c),p);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>Date.now();
+const p2=n=>String(n).padStart(2,'0');
+const num=n=>n==null||n!==n?'—':String(n).replace('-','−').replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f');
+const sess=Math.random().toString(36).slice(2,6);let nidN=0;
+const nid=p=>p+'-'+sess+(++nidN).toString(36);
+let tt;const toast=s=>{T('toast',s);clearTimeout(tt);tt=setTimeout(()=>T('toast',''),3000)};
+
+// CEC vocabulary
+const tbl=s=>Object.fromEntries(s.split('|').map(x=>[x.slice(0,2),x.slice(3)]));
+const OPS=tbl('00 Feature Abort|04 Image View On|05 Tuner Step Increment|06 Tuner Step Decrement|07 Tuner Device Status|08 Give Tuner Device Status|09 Record On|0A Record Status|0B Record Off|0D Text View On|0F Record TV Screen|1A Give Deck Status|1B Deck Status|32 Set Menu Language|33 Clear Analogue Timer|34 Set Analogue Timer|35 Timer Status|36 Standby|41 Play|42 Deck Control|43 Timer Cleared Status|44 User Control Pressed|45 User Control Released|46 Give OSD Name|47 Set OSD Name|64 Set OSD String|67 Set Timer Program Title|70 System Audio Mode Request|71 Give Audio Status|72 Set System Audio Mode|7A Report Audio Status|7D Give System Audio Mode Status|7E System Audio Mode Status|80 Routing Change|81 Routing Information|82 Active Source|83 Give Physical Address|84 Report Physical Address|85 Request Active Source|86 Set Stream Path|87 Device Vendor ID|89 Vendor Command|8A Vendor Remote Button Down|8B Vendor Remote Button Up|8C Give Device Vendor ID|8D Menu Request|8E Menu Status|8F Give Device Power Status|90 Report Power Status|91 Get Menu Language|92 Select Analogue Service|93 Select Digital Service|97 Set Digital Timer|99 Clear Digital Timer|9A Set Audio Rate|9D Inactive Source|9E CEC Version|9F Get CEC Version|A0 Vendor Command With ID|A1 Clear External Timer|A2 Set External Timer|A3 Report Short Audio Descriptor|A4 Request Short Audio Descriptor|A5 Give Features|A6 Report Features|A7 Request Current Latency|A8 Report Current Latency|C0 Initiate ARC|C1 Report ARC Initiated|C2 Report ARC Terminated|C3 Request ARC Initiation|C4 Request ARC Termination|C5 Terminate ARC|F8 CDC Message|FF Abort');
+const UC=tbl('00 Select|01 Up|02 Down|03 Left|04 Right|09 Root Menu|0A Setup Menu|0B Contents Menu|0D Exit|20 0|21 1|22 2|23 3|24 4|25 5|26 6|27 7|28 8|29 9|2B Enter|30 Channel Up|31 Channel Down|35 Display Info|40 Power|41 Volume Up|42 Volume Down|43 Mute|44 Play|45 Stop|46 Pause|47 Record|48 Rewind|49 Fast Forward|4A Eject|4B Forward|4C Backward|53 EPG|60 Play Fn|61 Pause-Play Fn|64 Stop Fn|6B Power Toggle Fn|6C Power Off Fn|6D Power On Fn|71 F1 Blue|72 F2 Red|73 F3 Green|74 F4 Yellow');
+const PLAY=tbl('05 Fast Fwd 1|06 Fast Fwd 2|07 Fast Fwd 3|09 Fast Rev 1|0A Fast Rev 2|0B Fast Rev 3|15 Slow Fwd 1|16 Slow Fwd 2|17 Slow Fwd 3|19 Slow Rev 1|1A Slow Rev 2|1B Slow Rev 3|20 Reverse|24 Forward|25 Still');
+const DECK=tbl('01 Skip Forward|02 Skip Reverse|03 Stop|04 Eject');
+const PWR=tbl('00 On|01 Standby|02 To On|03 To Standby');
+const VER=tbl('01 1.1|02 1.2|03 1.2a|04 1.3a|05 1.4|06 2.0');
+const TYP=tbl('00 TV|01 Recording|02 Reserved|03 Tuner|04 Playback|05 Audio System|06 CEC Switch|07 Video Processor');
+const ABR=['Unrecognized opcode','Not in correct mode','Cannot provide source','Invalid operand','Refused','Unable to determine'];
+const LAN=['TV','Recording 1','Recording 2','Tuner 1','Playback 1','Audio System','Tuner 2','Tuner 3','Playback 2','Recording 3','Tuner 4','Playback 3','Reserved','Reserved','Specific','Broadcast'];
+const paStr=h=>h.length>=4?[...h.slice(0,4)].join('.'):h;
+const ascii=h=>(h.match(/../g)||[]).map(b=>{const c=parseInt(b,16);return c>31&&c<127?String.fromCharCode(c):'·'}).join('');
+function decode(d){
+if(!d)return'poll';
+const o=d.slice(0,2),a=d.slice(2),b=a.match(/../g)||[],n=OPS[o],f=t=>t[b[0]]||b[0]||'';
+if(!n)return'Unknown '+o;
+let x='',s=' ';
+switch(o){
+case'00':if(b[0])x=b[0]+' '+(OPS[b[0]]||'?')+(b[1]?', '+(ABR[parseInt(b[1],16)]||'reason '+b[1]):'');s=': ';break;
+case'70':case'81':case'82':case'86':case'9D':x=paStr(a);break;
+case'80':x=paStr(a)+' → '+paStr(a.slice(4));break;
+case'84':x=paStr(a)+(b[2]?' ('+(TYP[b[2]]||b[2])+')':'');break;
+case'87':x=b.join(':');break;
+case'A0':x=b.slice(0,3).join(':')+(b.length>3?' '+b.slice(3).join(' '):'');break;
+case'90':x=f(PWR);s=': ';break;
+case'9E':x=f(VER);break;
+case'44':x=f(UC);s=': ';break;
+case'41':x=f(PLAY);s=': ';break;
+case'42':x=f(DECK);s=': ';break;
+case'1A':x=f({'01':'On','02':'Off','03':'Once'});break;
+case'72':case'7E':x=f({'00':'Off','01':'On'});break;
+case'7A':if(b[0]){const v=parseInt(b[0],16);x='volume '+(v&127)+(v&128?', muted':'')}break;
+case'8D':x=f({'00':'Activate','01':'Deactivate','02':'Query'});break;
+case'8E':x=f({'00':'Activated','01':'Deactivated'});break;
+case'32':case'47':x=a?'"'+ascii(a)+'"':'';break;
+case'64':x=a.length>2?'"'+ascii(a.slice(2))+'"':'';break;
+}
+return n+(x?s+x:'');
+}
+
+// names: CEC role, then OSD names learned from 47 frames (kept in this browser)
+let osd={};try{osd=JSON.parse(LS.getItem('aether-osd'))||{}}catch{}
+const lastPa={},seen=new Set();
+const nm=(n,to)=>n==null?'':n===15?(to?'all':'Unregistered'):(osd[n]?.n||LAN[n]||'?');
+const laLabel=n=>n+' '+(n===15?'Broadcast':(osd[n]?.n||LAN[n]));
+let namesT;
+function namesChanged(){clearTimeout(namesT);namesT=setTimeout(()=>{LS.setItem('aether-osd',JSON.stringify(osd));fillSelects()},300)}
+function learn(e){
+const d=e.data||'',f=e.from;
+const la=n=>Number.isInteger(n)&&n>=0&&n<15;
+for(const n of[e.from,e.to])if(la(n)&&!seen.has(n)){seen.add(n);namesChanged()}
+if(!la(f)||e.ev==='rx'&&!e.ack&&e.to!==15)return;
+if(d.startsWith('84')&&d.length>=6){const p=paStr(d.slice(2,6));if(osd[f]?.p&&osd[f].p!==p){delete osd[f];namesChanged()}lastPa[f]=p;if(osd[f])osd[f].p=p}
+else if(d.startsWith('47')&&d.length>2){const n=ascii(d.slice(2));if(osd[f]?.n!==n){osd[f]={n,p:lastPa[f]};namesChanged()}}
+}
+function fillSelects(){
+const to=$('sTo'),tv=to.value||'4',dv=$('fDev'),v=dv.value;
+to.innerHTML=LAN.map((_,i)=>`<option value="${i}">${esc(laLabel(i))}</option>`).join('');to.value=tv;
+dv.innerHTML='<option value="">any</option>'+[...seen].sort((a,b)=>a-b).map(i=>`<option value="${i}">${esc(laLabel(i))}</option>`).join('');
+dv.value=seen.has(+v)?v:'';
+}
+
+// state
+let token=LS.getItem('aether-token')||'';
+let st={},boot=null,upBase=null,cfg=null,live='connecting',lostAt=0,retryAt=0,lastRx=0;
+const authOk=()=>!!token&&live!=='denied';
+const devNow=()=>upBase?upBase[0]+(now()-upBase[1])*1e3:null;
+const fmtUp=us=>{if(us==null)return'—';const s=Math.floor(us/1e6);return Math.floor(s/86400)+'d '+p2(Math.floor(s/3600)%24)+':'+p2(Math.floor(s/60)%60)+':'+p2(s%60)};
+const dur=s=>(s=Math.max(0,Math.round(s)),s<60?s+' s':s<3600?Math.floor(s/60)+' m '+s%60+' s':s<86400?Math.floor(s/3600)+' h '+Math.floor(s/60)%60+' m':Math.floor(s/86400)+' d '+Math.floor(s/3600)%24+' h');
+const ago=us=>{const n=devNow();return n==null||us==null?'—':dur((n-us)/1e6)+' ago'};
+
+// API calls are serialised: the device allows 4 connections, the event stream included
+let q=Promise.resolve();
+function api(path,o={}){
+const run=async()=>{
+const h={Authorization:'Bearer '+token};if(o.body)h['Content-Type']='application/json';
+const r=await fetch(path,{method:o.method||'GET',headers:h,body:o.body?JSON.stringify(o.body):undefined,signal:AbortSignal.timeout(10000)});
+let j=null;try{j=await r.json()}catch{}
+if(r.status===401)denied();
+if(!r.ok||j&&j.ok===false){const e=Error(j?.reason||'HTTP '+r.status);e.status=r.status;e.reason=j?.reason;throw e}
+return j};
+const p=q.then(run,run);q=p.catch(()=>{});return p}
+
+// header and banners
+function hv(id,t,c=''){const e=$(id);e.textContent=t;e.className=c}
+function renderHead(){
+const tk=authOk(),la='la' in st;
+$('head').classList.toggle('stale',live==='lost');
+$('live').className='st '+({live:'live',lost:'recon',connecting:'recon'}[live]||'none');
+T('liveT',{live:'live',lost:'reconnecting',connecting:'connecting',none:'no token',denied:'token rejected',offline:'restarting'}[live]);
+T('hNode',cfg?.node||'aether');
+hv('hBus',tk?st.bus??'—':'—',!tk||!st.bus?'v-dim':st.bus==='ok'?'v-ok':'v-bad');
+hv('hLa',!tk||!la?'—':st.la==null?'allocating':st.la===15?'15 none free':laLabel(st.la),!tk||!la?'v-dim':st.la==null?'v-wait':st.la===15?'v-bad':'');
+hv('hPa',tk&&st.pa||'—',tk?'':'v-dim');
+$('hHpdW').hidden=!tk||st.hpd==null;T('hHpd',st.hpd?'high':'low');
+hv('hRssi',tk&&st.rssi!=null?num(st.rssi):'—',tk?'':'v-dim');
+const bt=st.boot!=null?st.boot+' '+(st.reset_reason||''):'—';
+hv('hBoot',bt,/panic|wdt|brownout/.test(st.reset_reason)?'v-bad':'');T('oBoot',bt);
+T('hFw',st.fw||'—');T('oFw',st.fw||'—');
+$('tok').classList.toggle('want',!tk);$('tokS').className='btn'+(tk?'':' pri');
+tick();
+}
+let bandKey='';
+const band=(k,c,h)=>[k,c,`<div class="txt">${h}</div>`];
+function renderBands(){
+const b=[],sh='<code>show token</code> on the serial console prints it.';
+if(!token)b.push(band('tok','b-n','<strong>No API token in this browser.</strong> Paste it into Token to connect. '+sh));
+else if(live==='denied')b.push(band('den','b-err','<strong>Token rejected (401).</strong> Paste the current token into Token. '+sh));
+if(live==='lost')b.push(band('lost','b-n','<strong>Event stream lost <span id="lostS"></span> ago.</strong> <span id="lostR"></span> Values shown are stale.'));
+if(live==='offline')b.push(band('off','b-n','<strong>Bridge went offline</strong> (restart or shutdown). The page reconnects on its own.'));
+if(token&&live!=='denied'){
+if(st.bus==='stuck_low')b.push(band('sl','b-err','<strong>CEC line stuck low.</strong> No frame can pass until it is released.'));
+if(st.bus==='no_pullup')b.push(band('np','b-err','<strong>CEC line read low at boot.</strong> Check the pull-up and wiring.'));
+if(st.online&&'la' in st&&st.la==null)b.push(band('la','b-n','<strong>No logical address yet.</strong> The bridge is allocating; Send is disabled until it has one.'));
+if((st.last_crash||st.last_stage)&&LS.getItem('aether-crash')!==String(st.boot)){const x=band('cr'+st.boot,'b-err',`<strong>Previous boot crashed</strong> (${esc(st.reset_reason||'?')})${st.last_stage?`<div class="mono">last_stage  ${esc(st.last_stage)}</div>`:''}${st.last_crash?`<div class="mono">last_crash  ${esc(st.last_crash)}</div>`:''}`);x[2]+='<button class="btn" id="crX">Dismiss</button>';b.push(x)}
+}
+const k=b.map(x=>x[0]).join();
+if(k!==bandKey){bandKey=k;$('bands').innerHTML=b.map(x=>`<div class="band ${x[1]}">${x[2]}</div>`).join('');const x=$('crX');if(x)x.onclick=()=>{LS.setItem('aether-crash',String(st.boot));renderBands()}}
+tick();
+}
+function setLive(s){if(s==='lost'&&live!=='lost')lostAt=now();live=s;renderHead();renderBands();updSend();otaSet(ota.s);counts()}
+function tick(){
+if(token&&live!=='denied')T('hUp',fmtUp(devNow()));
+if($('lostS')){T('lostS',dur((now()-lostAt)/1e3));T('lostR',retryAt>now()?'Next try in '+dur((retryAt-now())/1e3)+'.':'Trying now.')}
+if(!$('p-Counters').hidden)telAgo();
+}
+
+// event stream via fetch + ReadableStream (EventSource cannot send Authorization)
+let gen=0,ctl=null,refreshedAt=0;
+async function stream(){
+const my=++gen;ctl?.abort();let delay=1000;
+while(my===gen&&token&&live!=='denied'){
+const c=ctl=new AbortController();
+try{
+const r=await fetch('/api/events',{headers:{Authorization:'Bearer '+token},signal:c.signal});
+if(r.status===401){denied();return}
+if(!r.ok)throw 0;
+lastRx=now();
+if(now()-refreshedAt>3000)await refresh().catch(()=>{});
+if(my!==gen)return;
+setLive('live');delay=1000;
+const rd=r.body.getReader(),dec=new TextDecoder(),p=P();
+for(;;){
+const{done,value}=await rd.read();if(done)break;
+lastRx=now();feed(p,dec.decode(value,{stream:true}));
+}
+}catch{}
+if(my!==gen)return;
+if(live!=='offline')setLive('lost');retryAt=now()+delay;tick();
+await sleep(delay);delay=Math.min(delay*2,15000);
+}
+}
+// SSE: LF, CR or CRLF line ends, CRLF may span chunks; keeps only the partial line and current event
+const P=()=>({b:'',e:'',d:null,cr:0});
+function feed(p,s){
+for(let i;;){if(p.cr&&s){p.cr=0;if(s[0]==='\n')s=s.slice(1)}
+if((i=s.search(/[\r\n]/))<0){p.b+=s;return}
+const l=p.b+s.slice(0,i),c=l.indexOf(':'),f=c<0?l:l.slice(0,c),v=c<0?'':l.slice(c+1).replace(/^ /,'');p.b='';p.cr=s[i]==='\r';s=s.slice(i+1);
+if(!l){if(p.d!=null)sse(p.e,p.d);p.e='';p.d=null}else if(f==='event')p.e=v;else if(f==='data')p.d=p.d==null?v:p.d+'\n'+v}}
+function sse(ev,data){
+let j;try{j=JSON.parse(data)}catch{return}if(!j||typeof j!=='object')return;
+if(ev==='bus')onBus(j);else if(ev==='status')onStatus(j);else if(ev==='ota')onOta(j);else if(ev==='telemetry')onTel(j);
+}
+function stopStream(){gen++;ctl?.abort()}
+function denied(){stopStream();setLive('denied')}
+async function refresh(){refreshedAt=now();onStatus(await api('/api/status'));loadCfg(await api('/api/cfg'))}
+async function connect(){
+stopStream();
+if(!token){setLive('none');health();return}
+setLive('connecting');
+try{await refresh()}catch(e){if(e.status===401)return}
+stream();
+}
+function health(){fetch('/healthz').then(r=>r.json()).then(j=>{if(!token){st={fw:j.fw,boot:j.boot,reset_reason:j.reset_reason};renderHead()}}).catch(()=>{})}
+function onStatus(s){
+if(s.online===false){st.online=false;if(live==='live')setLive('offline');return}
+if(s.boot!=null&&boot!=null&&s.boot!==boot){add({e:{ev:'mark',text:'boot '+s.boot+' '+(s.reset_reason||'')}});lastSeq=null;bySeq.clear();telPrev=telCur=null}
+if(s.boot!=null)boot=s.boot;
+st=s;if(s.t_us!=null)upBase=[s.t_us,now()];
+seedOwn();renderHead();renderBands();updSend();otaCheck();
+}
+function seedOwn(){if(cfg&&st.la!=null&&st.la<15&&osd[st.la]?.n!==cfg.osd){osd[st.la]={n:cfg.osd,p:st.pa};namesChanged()}}
+
+// bus monitor: append in one batch per frame, drop from the top, filters toggle a class
+const list=$('list'),sc=$('sc'),CAP=500,KINDS=['rx','tx','local','err','line','polls'];
+let rows=[],queue=[],buf=[],fresh=0,raf=0,paused=false,pauseBy='',bySeq=new Map(),lastSeq=null,pend=new Map(),inflight=null;
+let off={},fDev='',fOp='';
+const NP=o=>Object.assign(Object.create(null),o),SC=NP({ack:'s-ack',nack:'s-bad',line_error:'s-bad',arb_lost:'s-n',busy:'s-n',rejected:'s-rej',sending:'s-send','no outcome':'s-n'}),KC=NP({rx:'k-rx',tx:'k-tx',loc:'k-loc',err:'k-err',line:'k-line'});
+function onBus(e){
+if(e.t_us!=null)upBase=[e.t_us,now()];
+if(typeof e.data!=='string')delete e.data;
+if(Number.isInteger(e.seq)){
+if(lastSeq!=null&&e.seq>lastSeq+1)add({e:{ev:'mark',text:(e.seq-lastSeq-1)+' events missed, seq '+(lastSeq+1)+(e.seq-lastSeq>2?' to '+(e.seq-1):'')}});
+lastSeq=e.seq;
+}
+learn(e);
+if(e.ev==='line'){if('bus' in e)st.bus=e.bus;if('hpd' in e)st.hpd=e.hpd;if('la' in e)st.la=e.la;renderHead();renderBands();updSend()}
+if(e.ev==='tx'&&e.id&&pend.has(e.id))return settle(e);
+add({e});
+}
+function add(r){
+if(paused){buf.push(r);fresh++;if(buf.length>CAP)buf.shift().gone=1;updPill();return}
+queue.push(r);if(queue.length>CAP)queue.shift().gone=1;
+if(!raf)raf=requestAnimationFrame(flush);
+}
+function flush(){
+raf=0;if(paused){for(const r of queue)add(r);queue=[];return}
+if(!queue.length)return;
+const f=document.createDocumentFragment();
+for(const r of queue){if(r.gone)continue;r.el=build(r);if(!match(r.e))r.el.classList.add('x');f.append(r.el);rows.push(r);if(r.e.seq!=null&&r.e.status!=='sending')bySeq.set(r.e.seq,r)}
+queue=[];list.append(f);
+while(rows.length>CAP){const o=rows.shift();o.el.remove();o.det?.remove();o.gone=1;if(bySeq.get(o.e.seq)===o)bySeq.delete(o.e.seq)}
+counts();
+}
+// event fields are untrusted: text via textContent, classes from fixed tables
+function build(r){
+const e=r.e,el=E('div');el._r=r;
+if(e.ev==='mark'){el.className='div';el.textContent=e.text;return el}
+const k=e.ev==='tx'?(e.origin==='local'?'loc':'tx'):String(e.ev),fr=e.ev==='rx'||e.ev==='tx',data=e.data,poll=fr&&data==='';
+let kc=KC[k]||'',dec='',dc='',st='',sc='',op='',args='';
+if(fr){const b=(data||'').match(/../g)||[];op=poll?'—':b[0]||'';args=b.slice(1,4).join(' ')+(b.length>4?' …':'');dec=data==null?'':decode(data)}
+if(e.ev==='rx'){st=e.ack?'ack':'nack';sc=e.ack?'s-ack':poll?'s-soft':'s-bad'}
+if(e.ev==='tx'){const s=e.status||'?';st=s+(e.attempts>1?' ×'+e.attempts:'');sc=poll&&s==='nack'?'s-soft':SC[s]||'s-bad';
+if(e.reason){dec=(s==='rejected'?'rejected: ':'')+e.reason;dc='bad'}}
+if(e.ev==='err')dec=[e.kind,e.bits!=null&&'bits='+e.bits,e.dropped!=null&&'dropped='+e.dropped].filter(Boolean).join(' ');
+if(e.ev==='line'){const p=[];if('bus' in e)p.push('bus '+(e.bus??'not measured'));if('hpd' in e)p.push('hpd '+(e.hpd==null?'null':e.hpd?'high':'low'));if('la' in e)p.push('la '+(e.la===15?'15, none free':e.la));dec=p.join(', ');
+if(e.bus&&e.bus!=='ok'||e.la===15)dc='bad';else{kc='k-lineok';if(e.bus==='ok')dc='okc'}}
+el.className='row'+(poll?' poll':'')+(e.status==='sending'?' fl-send':r.fl?' fl '+r.fl:'');
+const rep=e.reply_to?.seq,b=E('button','seq',e.seq),t=E('span','t',e.t_us!=null?(e.t_us/1e6).toFixed(3):''),d=E('span','d '+dc),s=E('span','s');
+b.setAttribute('aria-expanded',!!r.det);b.setAttribute('aria-label','Event '+(e.seq??e.id??'')+' details');if(e.t_us!=null)t.title=fmtUp(e.t_us);
+if(rep!=null){const a=E('a','rep','↩ '+rep);a.href='#';a.dataset.s=rep;d.append(a)}
+d.append(dec);if(st)s.append(E('span','chip '+sc,st));
+el.append(b,t,E('span','k '+kc,k),A(E('span','rt'),E('span','n',e.from),E('span','',nm(e.from)),E('span','ar',e.from!=null||e.to!=null?'→':''),E('span','n',e.to),E('span','',nm(e.to,1))),A(E('span','hx'),E('span','',op),E('span','args',args)),d,s);
+return el;
+}
+function rerender(r){if(!r.el||r.gone)return;const n=build(r);if(r.el.classList.contains('x'))n.classList.add('x');if(r.det)n.classList.add('open');r.el.replaceWith(n);r.el=n}
+function detail(r){
+const e=r.e,d=document.createElement('div'),b=(e.data||'').match(/../g)||[];d.className='det';
+let h=`<div class="all"><b>data</b>${esc(e.data==null?'none':b.join(' ')||'none (poll)')}</div>`;
+if(e.data)h+=`<div class="all"><b>decoded</b>${esc(decode(e.data))}</div>`;
+for(const k in e)if(k!=='ev'&&k!=='data')h+=`<div${k==='hist'?' class="all"':''}><b>${esc(k)}</b>${esc(typeof e[k]==='object'&&e[k]?JSON.stringify(e[k]):e[k])}</div>`;
+d.innerHTML=h;return d}
+function match(e){
+if(e.ev==='mark')return true;
+const k=e.ev==='tx'?(e.origin==='local'?'local':'tx'):e.ev,unk=e.from==null&&e.to==null;
+if(off[k]||off.polls&&(e.ev==='rx'||e.ev==='tx')&&e.data==='')return false;
+if(fDev!==''&&!unk&&e.from!==+fDev&&e.to!==+fDev)return false;
+return!fOp||unk&&e.ev!=='tx'||(e.data||'').toUpperCase().startsWith(fOp);
+}
+function applyFilter(){
+for(const r of rows){const h=!match(r.e);r.el.classList.toggle('x',h);r.det?.classList.toggle('x',h)}counts();
+for(const b of $('kinds').children)ap(b,!off[b.dataset.k]);
+const any=fDev!==''||fOp||Object.values(off).some(Boolean);$('fRes').hidden=!any;$('clr').hidden=any}
+function counts(){
+let n=0,v=0;for(const r of rows)if(r.e.ev!=='mark'){n++;if(!r.el.classList.contains('x'))v++}
+T('cnt',v+' of '+n);
+const em=$('empty');em.hidden=n&&v;
+if(!n)em.textContent=live==='live'?'Stream is live. Frames appear here as the bus carries them.':token?'Waiting for the event stream.':'Add an API token to see the bus.';
+else if(!v){em.innerHTML=`<p>All ${n} events are hidden by filters.</p><button class="btn" id="fRes2">Reset filters</button>`;$('fRes2').onclick=resetFilters}
+}
+function resetFilters(){off={};fDev=fOp='';$('fDev').value=$('fOp').value='';applyFilter()}
+function setPause(on,by){
+if(on===paused)return;paused=on;pauseBy=by||'';
+if(!on){const b=buf;buf=[];fresh=0;for(const r of b)add(r);flush();sc.scrollTop=0}
+const p=$('pause');ap(p,on);p.classList.toggle('on',on);T('pT',on?'Resume':'Pause');
+$('pIc').setAttribute('d',on?'M2 1l7 4-7 4z':'M2 1h2v8H2zM6 1h2v8H6z');updPill();
+}
+function updPill(){$('pill').hidden=!paused;T('pill','Resume · '+fresh+' new')}
+function jump(seq){
+const r=bySeq.get(+seq);if(!r)return toast('seq '+seq+' is no longer in the monitor');
+if(!r.el)setPause(false);
+if(r.el.classList.contains('x'))resetFilters();
+r.el.scrollIntoView({block:'center'});if(sc.scrollTop<-24)setPause(true,'scroll');
+r.fl='fl-ok';r.el.classList.remove('fl');void r.el.offsetWidth;r.el.classList.add('fl','fl-ok');
+}
+sc.addEventListener('scroll',()=>{const t=sc.scrollTop;if(!paused&&t<-24)setPause(true,'scroll');else if(paused&&pauseBy&&t>-4)setPause(false)},{passive:true});
+list.onclick=ev=>{
+const a=ev.target.closest('.rep');if(a){ev.preventDefault();return jump(a.dataset.s)}
+const el=ev.target.closest('.row'),r=el?._r;if(!r||getSelection().toString())return;
+if(r.det){r.det.remove();r.det=null}else{r.det=detail(r);el.after(r.det)}
+el.classList.toggle('open',!!r.det);el.firstChild.setAttribute('aria-expanded',!!r.det);
+};
+$('kinds').innerHTML=KINDS.map(k=>`<button class="tg" data-k="${k}">${k}</button>`).join('');
+$('kinds').onclick=ev=>{const b=ev.target.closest('.tg');if(b){off[b.dataset.k]=!off[b.dataset.k];applyFilter()}};
+$('fDev').onchange=ev=>{fDev=ev.target.value;applyFilter()};
+$('fOp').oninput=ev=>{fOp=ev.target.value.trim().toUpperCase();applyFilter()};
+$('fRes').onclick=resetFilters;
+$('clr').onclick=()=>{for(const r of[...rows,...buf,...queue])r.gone=1;rows=[];buf=[];queue=[];fresh=0;bySeq.clear();list.textContent='';setPause(false);counts()};
+$('pause').onclick=()=>setPause(!paused,'');
+$('pill').onclick=()=>setPause(false);
+function rowText(r){const e=r.e;if(e.ev==='mark')return'-- '+e.text+' --';const c=r.el.children;return[e.seq??'',c[1].textContent,c[2].textContent,(e.from??'')+' '+nm(e.from)+' → '+(e.to??'')+' '+nm(e.to,1),(e.data||'').replace(/(..)(?!$)/g,'$1 '),c[5].textContent,c[6].textContent].join('\t')}
+async function copy(t){try{await navigator.clipboard.writeText(t);return 1}catch{const a=document.createElement('textarea');a.value=t;a.style.cssText='position:fixed;opacity:0';document.body.append(a);a.select();let ok=0;try{ok=document.execCommand('copy')}catch{}a.remove();return ok}}
+$('cpM').onclick=async ev=>{const b=ev.target.closest('[data-c]');if(!b)return;$('cpM').open=false;
+const v=rows.filter(r=>!r.el.classList.contains('x')),ev2=v.filter(r=>r.e.ev!=='mark');
+toast(await copy(b.dataset.c==='j'?JSON.stringify(ev2.map(r=>r.e),null,1):v.map(rowText).join('\n'))?'Copied '+ev2.length+' rows':'Copy failed; the browser blocked the clipboard')};
+
+// send
+const PRE=[['','—','Poll'],['8F','8F','Power status'],['36','36','Standby'],['85','85','Req. active source',15],['46','46','OSD name'],['83','83','Physical addr'],['8C','8C','Vendor ID'],['9F','9F','CEC version'],['860000','86','Set stream path',15,1],['04','04','Image View On'],['82','82','Active source',15,1],['4400','44','User control',0,1],['45','45','UC released'],['4124','41 24','Play'],['4125','41 25','Play still']];
+$('pres').innerHTML=PRE.map((p,i)=>`<button class="pre" type="button" data-i="${i}" title="${esc(decode(p[0]))}"><b>${p[1]}</b>${p[2]}</button>`).join('');
+$('pres').onclick=ev=>{const b=ev.target.closest('.pre');if(!b)return;const p=PRE[b.dataset.i],d=$('sData');
+d.value=p[0]==='82'?'82'+(st.pa||'0.0.0.0').replace(/\./g,''):p[0];if(p[3]!=null)$('sTo').value=p[3];updSend();
+if(p[4]){d.focus();d.setSelectionRange(2,d.value.length)}};
+let sendOk=false;
+const rawData=()=>$('sData').value.replace(/\s+/g,'').toUpperCase();
+function updSend(){
+const raw=rawData(),ok=/^([0-9A-F]{2}){0,15}$/.test(raw),poll=raw==='',dec=$('sDec'),re=$('sRe'),i=$('sData');
+i.classList.toggle('bad',!ok);i.setAttribute('aria-invalid',!ok);
+dec.className=!ok?'warn':poll?'hint':'dec';
+dec.textContent=!ok?(raw.length>30?'Too long: at most 15 bytes (30 hex digits).':'Not hex pairs. The device would answer data_not_hex.'):poll?'Polls are sent once. A NACK here is evidence, not a failure.':decode(raw);
+re.disabled=poll;re.options[0].textContent=poll?'0, poll':'default, 1';
+const why=!authOk()?'No working API token. Add one in the header.':!('la' in st)?'Waiting for bridge status.':st.la==null||st.la===15?'No logical address yet. Sending would answer no_la.':'';
+sendOk=ok&&!why&&!inflight;$('sGo').disabled=!sendOk;T('sGo',inflight?'Sending…':'Send');
+$('sWhy').hidden=!why;T('sWhy',why);
+}
+$('sData').oninput=updSend;
+$('p-Send').onsubmit=async ev=>{
+ev.preventDefault();if(!sendOk)return;
+const id=nid('w'),to=+$('sTo').value,data=rawData(),re=$('sRe').value,body={id,to,data};
+if(re!==''&&data!=='')body.retries=+re;
+const r={e:{ev:'tx',id,origin:'host',from:st.la,to,data,status:'sending'}};
+pend.set(id,r);inflight=r;add(r);showRes(r);updSend();
+r.tm=setTimeout(()=>{if(pend.get(id)!==r)return;pend.delete(id);r.e.status='no outcome';r.e.reason='no tx event within 6 s';r.fl='fl-n';done(r)},6000);
+try{await api('/api/tx',{method:'POST',body})}catch(err){if(pend.get(id)!==r)return;pend.delete(id);clearTimeout(r.tm);r.e.status='http '+(err.reason||err.status||'error');r.e.reason=err.message;r.fl='fl-bad';done(r)}
+};
+// the outcome moves the pending row to its place in the stream and fills seq/status
+function settle(e){const r=pend.get(e.id);pend.delete(e.id);clearTimeout(r.tm);Object.assign(r.e,e);
+r.fl=e.status==='ack'?'fl-ok':SC[e.status]==='s-n'?'fl-n':'fl-bad';
+const i=rows.indexOf(r);
+if(!paused&&i>=0){rows.splice(i,1);r.el.remove();r.det?.remove();r.det=r.el=null;add(r)}
+else if(r.gone){r.gone=0;r.el=null;add(r)}else if(r.el&&e.seq!=null)bySeq.set(e.seq,r);
+done(r)}
+function done(r){rerender(r);if(inflight===r)inflight=null;showRes(r);updSend()}
+function showRes(r){const e=r.e,s=e.status,sc=SC[s]||'s-bad',o=$('sRes');
+o.replaceChildren(E('span','chip '+(sc==='s-rej'?'s-bad':sc),s+(e.attempts>1?' ×'+e.attempts:'')),E('span','',e.id));
+if(e.seq!=null){const b=E('button','lnk','seq '+e.seq);b.type='button';b.dataset.s=e.seq;o.append(b)}
+if(e.reason){const x=E('span','d bad',e.reason);x.style.width='100%';o.append(x)}}
+$('sRes').onclick=ev=>{const b=ev.target.closest('[data-s]');if(b){if(mq.matches)setTab('Bus');jump(b.dataset.s)}};
+
+// counters
+const TG=[['rx',['frames','errors','acked_by_us']],['tx',['host','local','ack','nack','arb_lost','line_error','busy','rejected','retransmits','origin_missing','sample_late','launch_rejected','echo_error','edge_overrun','driven_low_mismatch']],['queue',['depth','max']],['link',['rssi','link_count','outbox_dropped']],['heap',['heap_free','heap_min','heap_largest']]];
+const BAD=new Set('errors nack arb_lost line_error busy rejected origin_missing sample_late launch_rejected echo_error edge_overrun driven_low_mismatch outbox_dropped'.split(' '));
+const tg=(t,g,k)=>g==='rx'||g==='tx'||g==='queue'?t[g]?.[k]:t[k];
+let telCur=null,telPrev=null;
+function onTel(t){
+if(telCur&&t.boot!=null&&t.boot!==telCur.boot)telPrev=null;
+else if(telCur&&t.t_us!==telCur.t_us)telPrev=telCur;
+telCur=t;if(t.rssi!=null){st.rssi=t.rssi;renderHead()}renderTel();
+}
+function renderTel(){
+const t=telCur,p=telPrev,w=$('cTab'),row=(c,...x)=>w.append(A(E('div','ct'+c),...x.map(v=>v.nodeType?v:E('span','',v))));if(!t)return;
+w.replaceChildren();row(' th','counter','value','Δ');
+for(const[g,ks]of TG){row(' grp',g);
+for(const k of ks){const v=tg(t,g,k),pv=p?tg(p,g,k):null,d=v!=null&&pv!=null?v-pv:null;
+row('',k,num(v),E('span',!d?'zero':d>0&&BAD.has(k)?'neg':'',d==null?'':d===0?'·':(d>0?'+':'')+num(d)))}}
+telAgo();
+}
+function telAgo(){const t=telCur;if(!t)return;const n=devNow(),s=cfg?.telemetry_s;
+T('cAgo',(s?'Stream sample every '+s+' s. ':'')+'Last sample '+(n!=null?dur((n-t.t_us)/1e6)+' ago':'—')+'.'+(telPrev?' Δ over '+dur((t.t_us-telPrev.t_us)/1e6)+'.':''))}
+async function loadTel(){try{onTel(await api('/api/telemetry'))}catch(e){T('cAgo',e.reason==='not_found'?'No sample yet; the bus has just started.':'Telemetry: '+e.message)}}
+$('cRef').onclick=loadTel;
+
+// log
+async function loadLog(){
+try{const a=await api('/api/log');
+$('lList').innerHTML=a.length?a.slice().reverse().map(l=>`<div class="lg"><div class="lgt"><span title="uptime ${fmtUp(l.t_us)}">${ago(l.t_us)}</span><span class="lv-${esc(l.lvl)}">${esc(l.lvl)}</span></div><div class="msg">${esc(l.msg)}</div></div>`).join(''):'<div class="lg">Empty.</div>';
+T('lHint','Last 64 lines, newest first. Read '+new Date().toLocaleTimeString()+'.')}
+catch(e){T('lHint','Log: '+e.message)}}
+$('lRef').onclick=loadLog;
+setInterval(()=>{if($('lAuto').checked&&!$('p-Log').hidden&&(!mq.matches||app.dataset.view==='rail')&&live==='live')loadLog()},10000);
+
+// config
+const RP=[['83','Physical'],['8C','Vendor'],['8F','Power'],['9F','Version'],['46','OSD name'],['91','Language']];
+const fld=(k,l,c)=>`<div class="fld" id="f-${k}"><label for="c-${k}">${l}</label>${c}<span class="warn" hidden></span></div>`;
+const sel=(k,o)=>`<select id="c-${k}" class="inp">${o.map(v=>(v=Array.isArray(v)?v:[v,v],`<option value="${v[0]}">${v[1]}</option>`)).join('')}</select>`;
+const inp=(k,a='')=>`<input id="c-${k}" class="inp" spellcheck="false" autocomplete="off" ${a}>`;
+const tset=(k,l,c,i)=>`<div class="fld" id="f-${k}"><span id="l-${k}">${l}</span><div class="tset${c}" role="group" aria-labelledby="l-${k}" id="c-${k}">${i}</div><span class="warn" hidden></span></div>`;
+$('cForm').innerHTML=`<div class="ro"><span>Node, serial console only</span><b id="cNode">—</b></div><div class="two">`+
+fld('la','Logical address',sel('la',[['auto','auto'],...LAN.slice(0,15).map((n,i)=>[i,i+' '+n])]))+fld('type','Type',sel('type',['tv','playback','audio','recorder','tuner']))+
+fld('pa','Physical address',inp('pa','placeholder="a.b.c.d or edid"'))+fld('osd','OSD name',inp('osd','maxlength="14"'))+
+fld('vendor','Vendor',inp('vendor','maxlength="6"'))+fld('cec_version','CEC version',sel('cec_version',['1.3a','1.4','2.0']))+'</div>'+
+tset('replies','Local replies',' six',RP.map(r=>`<button class="tv" type="button" data-v="${r[0]}">${r[0]} ${r[1]}</button>`).join(''))+
+tset('ack','Acknowledge for','',LAN.slice(0,15).map((n,i)=>`<button class="tv" type="button" data-v="${i}" title="${n}">${i}</button>`).join(''))+'<div class="two">'+
+fld('telemetry_s','Telemetry, s',inp('telemetry_s','inputmode="numeric"'))+fld('log','Log level',sel('log',['off','error','warn','info','debug']))+
+fld('gc','GPIO cec',inp('gc','inputmode="numeric"'))+fld('gh','GPIO hpd',inp('gh','inputmode="numeric" placeholder="none"'))+'</div>'+
+'<label class="chk"><input type="checkbox" id="c-allow_from">allow_from, bench only</label><span class="hint" id="gpH" hidden>GPIO changes take effect after a restart.</span>';
+const KEYS=['la','type','pa','osd','vendor','cec_version','replies','ack','telemetry_s','log','allow_from','gpio'];
+const CE={bad_la:['la','Not valid for this type, or out of range.'],edid_unsupported:['pa','edid needs DDC pins; none are configured.'],forbidden_reply:['replies','85 and 82 cannot be answered locally.'],bad_ack:['ack','Not a valid acknowledge set.'],bad_cec_gpio:['gc','Not a supported CEC pin.'],gpio_conflict:['gc','CEC and HPD cannot share a pin.'],bad_hpd_gpio:['gh','Not a supported HPD pin.']};
+let rawMode=false;
+const cv=k=>$('c-'+k).value.trim(),int=s=>s===''?NaN:+s;
+const pressed=k=>[...$('c-'+k).children].filter(b=>b.getAttribute('aria-pressed')==='true').map(b=>b.dataset.v);
+function fv(){
+const extra=(cfg?.replies||[]).filter(o=>!RP.some(r=>r[0]===o.toUpperCase()));
+return{la:cv('la')==='auto'?'auto':+cv('la'),type:cv('type'),pa:cv('pa'),osd:$('c-osd').value,vendor:cv('vendor').toUpperCase(),cec_version:cv('cec_version'),
+replies:[...extra,...pressed('replies')],ack:pressed('ack').map(Number),telemetry_s:int(cv('telemetry_s')),log:cv('log'),allow_from:$('c-allow_from').checked,gpio:{cec:int(cv('gc')),hpd:cv('gh')===''?null:int(cv('gh'))}}}
+const canon=(k,v)=>JSON.stringify(Array.isArray(v)&&(k==='replies'||k==='ack')?v.map(s=>typeof s==='string'?s.toUpperCase():s).sort((a,b)=>a<b?-1:a>b?1:0):v??null);
+// form and raw share this patch: changed supported keys only, never node, GPIO per member
+function patch(o){const b={},g=o.gpio,c=cfg.gpio||{};
+for(const k of KEYS)if(k!=='gpio'&&k in o&&canon(k,o[k])!==canon(k,cfg[k]))b[k]=o[k];
+if(g&&typeof g==='object')for(const m of['cec','hpd'])if(m in g&&canon(m,g[m])!==canon(m,c[m]))(b.gpio||={})[m]=g[m];
+return b}
+const isInt=(v,a,b)=>Number.isInteger(v)&&v>=a&&v<=b;
+function check(o){const e={},g=o.gpio;
+if(!/^[0-9a-f]\.[0-9a-f]\.[0-9a-f]\.[0-9a-f]$/i.test(o.pa)&&o.pa!=='edid')e.pa='Use a.b.c.d (hex digits) or edid.';
+if(new TextEncoder().encode(o.osd).length>14)e.osd='At most 14 bytes.';
+if(!/^[0-9A-F]{6}$/.test(o.vendor))e.vendor='Six hex digits, wire order.';
+if(!isInt(o.telemetry_s,0,65535))e.telemetry_s='0–65535; 0 disables.';
+if(!isInt(g.cec,0,255))e.gc='A GPIO number.';
+if(g.hpd!==null&&!isInt(g.hpd,0,255))e.gh='A GPIO number, or empty for none.';
+else if(g.hpd!==null&&g.hpd===g.cec)e.gh='Cannot equal the CEC pin.';
+return e}
+function rawObj(){try{const o=JSON.parse($('raw').value);return o&&typeof o==='object'&&!Array.isArray(o)?o:null}catch{return null}}
+function showErrs(map,form){
+for(const f of $('cForm').querySelectorAll('.fld')){const k=f.id.slice(2),m=map[k],w=f.lastChild;f.classList.toggle('bad',!!m);w.hidden=!m;w.textContent=m||'';$('c-'+k).setAttribute('aria-invalid',!!m)}
+$('cErr').hidden=!form;T('cErr',form||'')}
+function updCfg(){
+if(!cfg)return;let n,bad;
+if(rawMode){const o=rawObj();bad=!o;n=o?Object.keys(patch(o)).length:0;showErrs({},bad?'Not a JSON object.':'')}
+else{const o=fv(),d=patch(o),er=check(o),g=d.gpio||{},ch={...d,gc:'cec' in g,gh:'hpd' in g};
+bad=Object.keys(er).length>0;n=Object.keys(d).length;
+for(const f of $('cForm').querySelectorAll('.fld'))f.classList.toggle('ch',!!ch[f.id.slice(2)]);
+$('gpH').hidden=!d.gpio;showErrs(er,'')}
+$('foot').hidden=!n&&!bad;T('dirtyN',n?n+' unsaved':'invalid');$('cSave').disabled=bad||!n;
+}
+function fillForm(c){
+T('cNode',c.node);for(const k of['la','type','pa','osd','vendor','cec_version','telemetry_s','log'])$('c-'+k).value=String(c[k]??'');
+const rs=(c.replies||[]).map(s=>s.toUpperCase());for(const b of $('c-replies').children)ap(b,rs.includes(b.dataset.v));
+for(const b of $('c-ack').children)ap(b,(c.ack||[]).includes(+b.dataset.v));
+$('c-gc').value=c.gpio?.cec??'';$('c-gh').value=c.gpio?.hpd??'';$('c-allow_from').checked=!!c.allow_from;
+const r={...c};delete r.node;$('raw').value=JSON.stringify(r,null,2);
+}
+function loadCfg(c){const dirty=cfg&&!$('foot').hidden;cfg=c;if(!dirty)fillForm(c);T('rsLab','Type '+c.node+' to confirm');updCfg();seedOwn();renderHead()}
+function setMode(raw){
+if(raw===rawMode)return;
+if(raw)$('raw').value=JSON.stringify(fv(),null,2);
+else{const o=rawObj();if(!o)return showErrs({},'Fix the JSON before switching back to the form.');fillForm({...cfg,...o,gpio:{...cfg.gpio,...o.gpio},node:cfg.node})}
+rawMode=raw;$('cForm').hidden=raw;$('cRaw').hidden=!raw;ap($('mForm'),!raw);ap($('mRaw'),raw);updCfg()}
+$('mForm').onclick=()=>setMode(false);$('mRaw').onclick=()=>setMode(true);
+$('p-Config').oninput=$('p-Config').onchange=updCfg;
+$('cForm').addEventListener('click',ev=>{const b=ev.target.closest('.tv');if(b){ap(b,b.getAttribute('aria-pressed')!=='true');updCfg()}});
+$('cDis').onclick=()=>{fillForm(cfg);updCfg()};
+$('p-Config').onsubmit=async ev=>{
+ev.preventDefault();if($('cSave').disabled)return;
+const body={...patch(rawMode?rawObj():fv()),id:nid('c')};$('cSave').disabled=true;
+try{await api('/api/cfg',{method:'PUT',body});toast('Configuration saved');cfg=null;loadCfg(await api('/api/cfg'))}
+catch(e){const m=CE[e.reason];if(m&&!rawMode)showErrs({[m[0]]:e.reason+': '+m[1]},'');else showErrs({},(m?m[0]+' ':'')+(e.reason||e.message)+(m?': '+m[1]:''));$('cSave').disabled=false}
+};
+const cmd=(v,b={})=>api('/api/cmd/'+v,{method:'POST',body:{id:nid('c'),...b}});
+$('ping').onclick=async()=>{const t0=performance.now();try{const r=await cmd('ping',{echo:'web'});T('pong','ok, '+Math.round(performance.now()-t0)+' ms · t_us '+num(r.t_us))}catch(e){T('pong','failed: '+e.message)}};
+$('rst').onclick=async()=>{if(confirm('Restart '+(cfg?.node||'the bridge')+'? The stream drops and the page reconnects on its own.'))try{await cmd('restart');toast('Restarting')}catch(e){toast('Restart failed: '+e.message)}};
+$('rsOpen').onclick=()=>{const o=$('rsBox').hidden;$('rsBox').hidden=!o;$('rsOpen').setAttribute('aria-expanded',o);if(o)$('rsIn').focus()};
+$('rsIn').oninput=()=>{$('rsGo').disabled=!cfg||$('rsIn').value!==cfg.node};
+$('rsGo').onclick=async()=>{try{await cmd('reset',{confirm:$('rsIn').value});toast('Resetting to CEC defaults');$('rsIn').value='';$('rsGo').disabled=true}catch(e){toast('Reset failed: '+e.message)}};
+
+// OTA: hash in the browser, XHR for upload progress, verdict from the stream or, after reconnect, /healthz + /api/log
+let ota={s:'idle'},otaT=0,otaG=0,otaRun=0,otaAgain=0,otaX=null;
+const BUSY=['hashing','uploading','verifying','rebooting','unknown'];
+const OH={idle:'Choose an app image to enable upload.',hashing:'SHA-256 runs in this browser before anything is sent.',uploading:'Bus passive. Frames to this bridge are NACKed until the upload ends.',verifying:'The device checks SHA-256 before activating the slot.',rebooting:'The stream drops here. The page reconnects and waits for the verdict.',unknown:'Sent, but the reply was lost. Waiting for /healthz and Log to tell.',confirmed:'The new image reached MQTT and marked itself valid.',rolled_back:'The new image did not confirm within 60 s. Back on the old one.',failed:'Nothing was activated. Normal CEC operation has resumed.','no verdict':'None after 5 min. Compare Running and Boot, and check Log.'};
+function otaSet(s,o={}){
+ota={...ota,...o,s};const c=$('oSt'),busy=BUSY.includes(s),f=$('oFile').files[0];
+c.textContent=s==='uploading'?'uploading '+(ota.pct||0)+'%':s==='failed'?'failed: '+ota.reason:s;
+c.className='chip '+(s==='idle'||s==='no verdict'?'c-idle':s==='confirmed'?'c-ok':s==='failed'||s==='rolled_back'?'c-bad':'c-ter');
+$('oFi').hidden=!ota.file||!busy&&s!=='failed';T('oFi',ota.file||'');
+$('oBar').hidden=!busy||s==='hashing';$('oPb').style.width=(s==='uploading'?ota.pct||0:100)+'%';
+T('oHint',s==='idle'&&f?'Ready: '+f.name+'.':s==='confirmed'?'Boot '+st.boot+', '+(ota.fw||st.fw)+'. '+OH[s]:OH[s]);
+$('oDone').hidden=busy||s==='idle';T('oDone',s==='failed'?'Try again':'Done');
+$('oGo').disabled=busy||!f||!authOk();
+}
+function verdict(s,o){LS.removeItem('aether-ota');otaG++;clearTimeout(otaT);otaSet(s,o)}
+function onOta(j){
+const s=j.state;
+if(s==='receiving'){if(ota.s!=='uploading'||(j.pct||0)>(ota.pct||0))otaSet('uploading',{pct:j.pct})}
+else if(s==='verifying'||s==='rebooting')otaSet(s,{id:j.id});
+else if(s==='failed')verdict('failed',{reason:j.reason||'?'});
+else if(s==='confirmed'||s==='rolled_back')verdict(s,{fw:j.fw});
+}
+// one check in flight, one timer; verdict() and uploads bump otaG so stale checks cannot act
+async function otaCheck(){
+clearTimeout(otaT);otaT=0;if(otaRun){otaAgain=1;return}
+otaRun=1;let more;do{otaAgain=0;const g=otaG;more=await otaStep(g).catch(()=>g===otaG)}while(otaAgain);otaRun=0;
+if(more)otaT=setTimeout(otaCheck,3000);
+}
+async function otaStep(g){
+let p;try{p=JSON.parse(LS.getItem('aether-ota'))}catch{}
+if(!p||!authOk()||otaX)return 0;
+if(now()-p.at>3e5)return verdict('no verdict'),0;
+if(!BUSY.includes(ota.s))otaSet(p.id?'rebooting':'unknown',{id:p.id,file:p.file});
+const h=await(await fetch('/healthz',{signal:AbortSignal.timeout(5000)})).json(),nb=h.boot!==p.boot,m=(await api('/api/log')).filter(l=>nb||p.t!=null&&l.t_us>=p.t).map(l=>l.msg).join('\n');
+if(g!==otaG)return 0;
+if(nb){if(/rolled_back/.test(m))return verdict('rolled_back',{fw:h.fw}),0;if(/ota_confirmed/.test(m))return verdict('confirmed',{fw:h.fw}),0}
+else if(/ota_failed/.test(m))return verdict('failed',{reason:'see Log'}),0;
+else if(ota.s==='unknown'&&/ota_accepted/.test(m))otaSet('rebooting');
+return 1;
+}
+const hex=b=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
+// WebCrypto needs a secure context and plain LAN HTTP is not one, so keep a local SHA-256
+function sha256(m){const K=[],H=[],r=(x,n)=>x>>>n|x<<32-n;for(let n=2,i=0;i<64;n++){let p=1;for(let d=2;d*d<=n;d++)if(n%d<1)p=0;if(p){if(i<8)H[i]=Math.sqrt(n)%1*2**32|0;K[i++]=Math.cbrt(n)%1*2**32|0}}
+const L=m.length,P=new Uint8Array(Math.ceil((L+9)/64)*64);P.set(m);P[L]=128;const V=new DataView(P.buffer);V.setUint32(P.length-4,L*8);
+let h=H;for(let o=0;o<P.length;o+=64){const w=new Uint32Array(64);for(let i=0;i<64;i++)if(i<16)w[i]=V.getUint32(o+i*4);else{const a=w[i-15],b=w[i-2];w[i]=w[i-16]+(r(a,7)^r(a,18)^a>>>3)+w[i-7]+(r(b,17)^r(b,19)^b>>>10)}
+let[a,b,c,d,e,f,g,j]=h;for(let i=0;i<64;i++){const t=j+(r(e,6)^r(e,11)^r(e,25))+(e&f^~e&g)+K[i]+w[i]|0,u=(r(a,2)^r(a,13)^r(a,22))+(a&b^a&c^b&c)|0;j=g;g=f;f=e;e=d+t|0;d=c;c=b;b=a;a=t+u|0}
+h=h.map((v,i)=>v+[a,b,c,d,e,f,g,j][i]|0)}return h.map(v=>(v>>>0).toString(16).padStart(8,'0')).join('')}
+$('oFile').onchange=()=>{if(!BUSY.includes(ota.s))otaSet('idle',{file:''})};
+$('oDone').onclick=()=>{$('oFile').value='';otaSet('idle',{file:'',pct:0,reason:'',fw:''})};
+$('p-OTA').onsubmit=async ev=>{
+ev.preventDefault();const f=$('oFile').files[0];if(!f||$('oGo').disabled)return;
+otaG++;clearTimeout(otaT);const file=f.name+', '+num(f.size)+' B';
+otaSet('hashing',{file,pct:0,id:'',reason:'',fw:''});
+const b=await f.arrayBuffer(),dig=crypto.subtle?hex(await crypto.subtle.digest('SHA-256',b)):sha256(new Uint8Array(b));
+// baseline stored before sending so a lost reply or reload can be reconciled
+const pre={a:nid('o'),boot,fw:st.fw,t:devNow(),at:now(),file};LS.setItem('aether-ota',JSON.stringify(pre));
+otaSet('uploading',{pct:0});
+const x=otaX=new XMLHttpRequest();let sent=0;x.open('POST','/api/ota');
+x.setRequestHeader('Authorization','Bearer '+token);x.setRequestHeader('Content-Type','application/octet-stream');x.setRequestHeader('X-Sha256',dig);
+x.upload.onprogress=e=>{if(e.lengthComputable&&ota.s==='uploading'){const p=Math.floor(e.loaded*100/e.total);if(p>=100){sent=1;otaSet('verifying')}else if(p>(ota.pct||0))otaSet('uploading',{pct:p})}};
+x.upload.onload=()=>{sent=1};
+x.onload=()=>{otaX=null;let j={};try{j=JSON.parse(x.responseText)}catch{}
+if(x.status===202){LS.setItem('aether-ota',JSON.stringify({...pre,id:j.id}));if(ota.s!=='failed')otaSet('rebooting',{id:j.id});otaCheck()}
+else{if(x.status===401)denied();verdict('failed',{reason:j.reason||'HTTP '+x.status})}};
+// 202 needs the whole body: a drop before it was sent activated nothing; after it the outcome is unknown
+x.onerror=x.ontimeout=()=>{otaX=null;if(sent){otaSet('unknown');otaCheck()}else verdict('failed',{reason:'connection lost before the image was sent'})};
+x.send(b);
+};
+
+// tabs, token, start
+function setTab(t){
+if(t==='Bus')app.dataset.view='bus';else{app.dataset.tab=t;app.dataset.view='rail';for(const p of $('rail').children)p.hidden=p.id!=='p-'+t}
+const bus=mq.matches&&app.dataset.view==='bus';
+for(const b of $('tabs').children)ap(b,bus?b.dataset.t==='Bus':b.dataset.t===app.dataset.tab);
+if(!token)return;
+if(t==='Counters')loadTel();if(t==='Log')loadLog();if(t==='Config'&&!cfg)api('/api/cfg').then(loadCfg,()=>{});
+}
+$('tabs').onclick=ev=>{const b=ev.target.closest('.tab');if(b)setTab(b.dataset.t)};
+mq.onchange=()=>setTab(mq.matches?'Bus':app.dataset.tab);
+$('more').onclick=()=>$('more').setAttribute('aria-expanded',$('head').classList.toggle('open'));
+$('tokF').onsubmit=ev=>{ev.preventDefault();const v=$('tok').value.trim();if(v){token=v;LS.setItem('aether-token',v);connect()}};
+$('tokX').onclick=()=>{LS.removeItem('aether-token');token='';$('tok').value='';stopStream();st={};cfg=null;setLive('none');health()};
+setInterval(()=>{tick();if(live==='live'&&now()-lastRx>40000)ctl?.abort()},1000);
+$('tok').value=token;fillSelects();applyFilter();updSend();otaSet('idle');setTab(mq.matches?'Bus':'Send');
+if(!token&&mq.matches)$('more').click();
+connect();
+</script>
+</body>
+</html>

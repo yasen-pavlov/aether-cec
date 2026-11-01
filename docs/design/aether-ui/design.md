@@ -70,3 +70,7 @@ https://claude.ai/artifact/<redacted>
 - History on load: none; monitor starts empty (accepted).
 - Opcodes: decode table follows the CEC spec (41 = Play, 44 = User Control Pressed); the brief's swap was an error.
 - Canvas source copied from the Claude Code worktree into `docs/design/aether-ui/canvas/project/`; worktree removed. Boards render only on claude.ai (DC templating).
+
+### 2026-11-01T10:50:00Z
+
+**decided and implemented** — `firmware/src/index.html` (65,391 bytes) by the UI implementer from the canvas; Sol review found 4 major (unescaped SSE fields in innerHTML, LF-only SSE framing, raw-JSON save resending the whole config, OTA transport error reported as failed) + 3 minor, all fixed with in-page proofs. Flashed as boot 140 via the new page's own OTA tab (uploading → rebooting → reconnect → `confirmed`). Live checks on `GET /`: send `8F`→5 round-trip with the Denon's `90 01` reply, Config/Counters/Log tabs, phone layout. Deviations from the canvas: uptime in seconds with d hh:mm:ss on hover; own LA named from `cfg.osd`; Copy kept; sent rows re-sort to stream order when the outcome arrives. Firefox verified only as a no-token render (no CDP driver available).
