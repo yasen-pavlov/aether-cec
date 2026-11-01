@@ -500,6 +500,13 @@ The IRAM ISR and ISR-dispatched sample/ACK-release timers perform no allocation,
 logging, serialization or network calls. Timer interrupts are pinned to core 1.
 IDF 5.4.2 requires `ESP_TIMER_SHOW_EXPERIMENTAL` to make the CPU1 affinity
 choices effective; generated bindings were checked for both CPU1 choices.
+CPU1 affinity puts flash-resident `esp_timer_init_os` on core 1 during IDF's
+SECONDARY init, where IDF's pre-scheduler flash guard assumes the other core is
+parked in IRAM; core 0's `init_coredump` then loads the partition table from
+flash and core 1 faults. `bootstage.rs`'s `.ctors` constructor (after the CORE
+list, before core 1 resumes) calls `esp_partition_find_first` once so that load
+happens while core 1 really is parked; the timer affinity and CEC timing are
+unchanged.
 The release also enables `RMT_ISR_IRAM_SAFE` and GPIO control in IRAM.
 IDF 5.4.2 `esp_timer.c:180-210,294-342,371-387,465-494` marks start_once,
 list/lock helpers and ISR dispatch IRAM unconditionally; there is no

@@ -83,7 +83,9 @@ static RECORD: Record = Record::zero();
 static CAPTURED: Record = Record::zero();
 
 /// IDF collects `.ctors` into `__init_array_start..__init_array_end` and calls
-/// them from `do_global_ctors` on core 0; `#[used]` keeps the pointer alive.
+/// them from `do_global_ctors` on core 0 (`startup.c`: after the CORE init list,
+/// which includes `init_flash`, and before `do_secondary_init` resumes core 1).
+/// `#[used]` keeps the pointer alive.
 #[unsafe(link_section = ".ctors")]
 #[used]
 static CLAIM: unsafe extern "C" fn() = claim;
@@ -99,6 +101,25 @@ unsafe extern "C" fn claim() {
         to.store(from.load(Ordering::Relaxed), Ordering::Relaxed);
     }
     write(Stage::PreMain as u32, 0);
+    preload_partition_table();
+}
+
+/// Core 0's SECONDARY `init_coredump` (prio 130) makes the first
+/// `esp_partition_find_first` call, which loads the partition table from flash
+/// with both caches disabled. `spi_flash/cache_utils.c` assumes that before
+/// the scheduler starts the other core is parked in IRAM, but with
+/// `ESP_TIMER_ISR_AFFINITY_CPU1` core 1 is running flash-resident
+/// `esp_timer_init_os` (SECONDARY prio 100) at that moment, and loses the race
+/// with `Cache disabled but cached memory region accessed`. Loading the table
+/// here, while core 1 really is parked, turns that call into a RAM lookup.
+fn preload_partition_table() {
+    unsafe {
+        esp_idf_svc::sys::esp_partition_find_first(
+            esp_idf_svc::sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+            esp_idf_svc::sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_DATA_COREDUMP,
+            core::ptr::null(),
+        );
+    }
 }
 
 /// Forced first thing in `main`: formats the captured record and keeps it only
