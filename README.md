@@ -201,6 +201,8 @@ this is diagnostics, not a fix or proof of resolution of the OTA crash.
 
 ## HTTP API, token and push OTA
 
+See [`docs/openapi.yaml`](docs/openapi.yaml) for the OpenAPI 3.1 HTTP API contract, schemas and examples.
+
 Port 80 is LAN-only plaintext HTTP: restrict access with the VLAN firewall.
 Every route except `/` and `/healthz` requires `Authorization: Bearer <token>`.
 The token is generated from 32 random bytes on first boot, with the bootloader

@@ -419,7 +419,7 @@ Malformed command JSON receives `ok:false, reason:"malformed"` with `id` omitted
 
 ```json
 {"id":"c-7","verb":"ping","ok":true,"t_us":51000000,"echo":"abc"}
-{"id":"c-8","verb":"cfg","ok":false,"reason":"replies: opcode 85 not allowed"}
+{"id":"c-8","verb":"cfg","ok":false,"reason":"forbidden_reply"}
 ```
 
 | Verb | Request | Effect |
@@ -487,12 +487,14 @@ the bridge is a fixed-IP device with a DHCP reservation and a broker account tie
 
 ## 11. HTTP API and web UI
 
+Machine-readable HTTP contract: [`docs/openapi.yaml`](openapi.yaml) (OpenAPI 3.1).
+
 One HTTP server on port 80, LAN-only (the IoT VLAN firewall is the perimeter; TLS is not offered
 because the device has no certificate). Bodies are the exact same JSON objects as the MQTT payloads;
 every handler calls the same logic as the MQTT verb, so the web UI, Choregos, `curl` and
 `mosquitto_pub` speak one dialect.
 
-Authentication: `Authorization: Bearer <token>` on every endpoint except `GET /`, static assets and
+Authentication: `Authorization: Bearer <token>` on every endpoint except `GET /` (the page embeds its assets) and
 `GET /healthz`. The token is 32 random bytes (hex), generated before Wi-Fi/ADC startup with the
 bootloader entropy source enabled and stored separately in NVS `secrets/token`; loading invalid
 credentials never overwrites the credentials blob. Console `show token` prints it;

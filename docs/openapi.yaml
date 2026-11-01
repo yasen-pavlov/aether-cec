@@ -1,0 +1,1164 @@
+openapi: 3.1.0
+info:
+  title: aether-cec LAN HTTP API
+  version: '1'
+  description: |
+    LAN-only, plaintext HTTP API for the ESP32 HDMI-CEC bridge. The same JSON
+    payloads are used by MQTT (protocol.md §§3–9); unknown object keys are
+    ignored for forward compatibility. Secrets are provisioned only over USB
+    serial and are never returned or set through this API. Restrict access
+    with the VLAN firewall; the device offers no TLS.
+
+    Exact public routes are GET / and GET /healthz. There are no separate
+    static-asset routes: the UI is embedded in the index HTML. All other
+    method/path pairs require the bearer token, including unknown routes.
+    Unsupported methods/paths return 404 not_found after authentication (401
+    without it). No MQTT cmd/ota or HTTP /api/cmd/cfg route exists; use PUT
+    /api/cfg and POST /api/ota respectively.
+
+    At most four concurrent connections are supported, including SSE clients.
+    The single HTTP server task streams uploads synchronously, so other
+    requests (even healthz) may wait behind an upload. JSON command/TX bodies
+    require Content-Length and are limited to 2048 bytes. Handler responses
+    use Cache-Control: no-store. Counters and timestamps are not wall time.
+
+    String limits in the Rust protocol are UTF-8 byte limits. maxLength is
+    also given where applicable, but JSON Schema counts Unicode code points;
+    x-maxUtf8Bytes records the authoritative byte limit for client tooling.
+    Error-to-status policy: unauthorized=401, not_found=404, too_large=413,
+    busy=409, storage_error=500; every other reason maps to 400.
+servers:
+  - url: http://aether
+    description: Bridge hostname on the LAN; the same API is also reachable by device IP.
+security:
+  - bearer: []
+paths:
+  /:
+    get:
+      operationId: getIndex
+      summary: Embedded web UI
+      description: One self-contained HTML page with inline CSS and vanilla JavaScript; no separate static assets.
+      security: []
+      responses:
+        '200':
+          description: Embedded UI; does not contain credentials.
+          content:
+            text/html:
+              schema:
+                type: string
+              example: '<!doctype html><html>…</html>'
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Unauthenticated application liveness
+      description: Application is running, not a guarantee of MQTT connectivity or bus health.
+      security: []
+      responses:
+        '200':
+          description: Running application and boot identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Healthz'
+  /api/status:
+    get:
+      operationId: getStatus
+      summary: Current bridge status
+      description: Snapshot refreshes at most once per second; uses the same object as retained MQTT status.
+      responses:
+        '200':
+          description: Status snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/cfg:
+    get:
+      operationId: getConfig
+      summary: Read effective persisted CEC configuration
+      responses:
+        '200':
+          description: Effective configuration, never Wi-Fi or MQTT credentials or API token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      operationId: patchConfig
+      summary: Atomically merge and persist a partial configuration
+      description: |
+        Requires id, even though this is a partial configuration object. Validates
+        the entire merged configuration before persisting and republishing cfg;
+        a failure changes nothing. Node and GPIO changes require restart.
+        pa=edid is understood by the wire type but currently returns
+        edid_unsupported (no configured DDC pins). Runtime power is not cfg.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigPatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/CommandSucceeded'
+        '400':
+          $ref: '#/components/responses/CommandBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/CommandBusy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/CommandStorageError'
+  /api/log:
+    get:
+      operationId: getLog
+      summary: Last 64 application log lines
+      description: Oldest first, regardless of cfg.log; never contains credentials. cfg.log controls the optional MQTT log topic, not this ring.
+      responses:
+        '200':
+          description: Bounded diagnostic history, possibly empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 64
+                items:
+                  $ref: '#/components/schemas/LogLine'
+              example: [{t_us: 1, lvl: warn, msg: line fault}]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/telemetry:
+    get:
+      operationId: getTelemetry
+      summary: Latest per-boot counters and runtime health
+      description: |
+        Returns the §6 telemetry object, independent of MQTT connectivity.
+        Snapshots are sampled once per second for HTTP; the first is available
+        approximately one second after the bus starts. Until then, returns
+        404 not_found. cfg.telemetry_s controls periodic publication, not
+        access to this snapshot.
+      responses:
+        '200':
+          description: Latest telemetry sample.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Telemetry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/cmd/ping:
+    post:
+      operationId: ping
+      summary: Echo a value and sample monotonic device time
+      description: Use RTT/2 to map t_us onto host wall time (sub-10-ms absolute, microsecond relative resolution).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PingRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CommandSucceeded'
+        '400':
+          $ref: '#/components/responses/CommandBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/CommandBusy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /api/cmd/state:
+    post:
+      operationId: setPower
+      summary: Set power returned by local CEC Give Device Power Status replies
+      description: Runtime only; not persisted. Boots as on. Does not itself turn connected equipment on or off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CommandSucceeded'
+        '400':
+          $ref: '#/components/responses/CommandBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/CommandBusy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /api/cmd/restart:
+    post:
+      operationId: restart
+      summary: Publish offline status and restart
+      description: |
+        Reboots within main's two-second shutdown deadline, or earlier after
+        offline PUBACK. The HTTP response's 500-ms grace only accelerates this;
+        a disconnected or timed-out HTTP waiter cannot prevent reboot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestartRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CommandSucceeded'
+        '400':
+          $ref: '#/components/responses/CommandBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/CommandBusy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /api/cmd/reset:
+    post:
+      operationId: resetConfig
+      summary: Restore default CEC configuration and restart
+      description: |
+        confirm must equal the configured node. Preserves the provisioned node,
+        Wi-Fi/MQTT secrets and boot counter. Unlike serial factory-reset, this
+        does not erase all NVS. Restart follows the same deadline as restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/CommandSucceeded'
+        '400':
+          $ref: '#/components/responses/CommandBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/CommandBusy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/CommandStorageError'
+  /api/tx:
+    post:
+      operationId: transmit
+      summary: Queue an asynchronous CEC transmission
+      description: |
+        Returns 202 {} after handing the raw request to the bus task, not after
+        validating or transmitting it. Observe the final BusEvent with ev=tx
+        over SSE/MQTT using id. Invalid payloads yield rejected outcomes (not
+        synchronous HTTP 400 validation errors); full CEC queue yields a busy
+        outcome. A full HTTP operation queue or five-second dispatch timeout
+        instead returns HTTP 409 busy. Validation order: id length, destination,
+        data length, hex content, initiator override, allocated LA. Raw ingress
+        bounds are 32 UTF-8 bytes of id and 64 of data; invalid JSON, missing or
+        wrongly typed fields, numeric overflow, and longer strings give
+        rejected/malformed with no id. The schema describes valid requests.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TxRequest'
+      responses:
+        '202':
+          description: Queued for asynchronous validation and transmission; no correlation id is generated here.
+          content:
+            application/json:
+              schema:
+                type: object
+                maxProperties: 0
+              example: {}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Busy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /api/events:
+    get:
+      operationId: getEvents
+      summary: Live server-sent events
+      description: |
+        Authenticated streaming fetch (Authorization header); do not send the
+        token in a query string. Each message is `event: <name>`, then
+        `data: <single-line JSON>`, then a blank line. Names and data schemas:
+        bus → BusEvent; status → Status; ota → OtaProgress;
+        telemetry → Telemetry (component references also provided below).
+        These are the identical serialized payloads used by MQTT, not wrappers.
+        Bus events arrive immediately; there is no history replay on MQTT
+        reconnect. Telemetry is emitted every cfg.telemetry_s seconds,
+        independently of MQTT; 0 disables periodic telemetry events. SSE
+        connections count against the four-connection limit.
+      responses:
+        '200':
+          description: Indefinite UTF-8 event stream, not a JSON array. x-sse-events maps event names to data schemas.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              x-sse-events:
+                bus:
+                  $ref: '#/components/schemas/BusEvent'
+                status:
+                  $ref: '#/components/schemas/Status'
+                ota:
+                  $ref: '#/components/schemas/OtaProgress'
+                telemetry:
+                  $ref: '#/components/schemas/Telemetry'
+              example: |
+                event: bus
+                data: {"ev":"rx","seq":812,"t_us":48211034,"from":1,"to":0,"data":"9000","ack":true}
+
+                event: status
+                data: {"online":true,"v":1,"fw":"0.1.0","boot":3,"reset_reason":"software","t_us":1234567,"la":0,"pa":"0.0.0.0","type":"tv","ip":"192.0.2.66","rssi":-58,"bus":"ok","hpd":null}
+
+                event: ota
+                data: {"id":"o-1","state":"receiving","pct":37}
+
+                event: telemetry
+                data: {"t_us":60000123,"boot":3,"rssi":-58,"link_count":1,"heap_free":168000,"heap_min":150000,"rx":{"frames":1531,"errors":2,"acked_by_us":303},"tx":{"host":765,"local":120,"ack":740,"nack":37,"arb_lost":3,"line_error":0,"busy":0,"rejected":1,"retransmits":12},"queue":{"depth":0,"max":16},"outbox_dropped":0}
+
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/ota:
+    post:
+      operationId: uploadFirmware
+      summary: Push an ESP-IDF application image to the inactive OTA partition
+      description: |
+        Requires nonzero Content-Length and a mandatory 64-hex X-Sha256 digest,
+        checked before activating the slot. The image must be an ESP-IDF app
+        for the same project name. 202 is sent only after the complete upload,
+        digest/project/image validation, durable id/target-slot recording and
+        boot-slot selection. It is not merely an upload-start acknowledgment.
+        Refused with 409 while the running image is pending verification or an
+        accepted upload awaits reboot, before allocating a new id. A second
+        upload while the single HTTP task is streaming waits in the backlog.
+
+        During upload the bridge suspends CEC TX and follower ACK, aborting an
+        active TX with a correlated busy outcome (no attempts); unstarted
+        requests stay queued. RX continues but flash stalls may lose edges.
+        Failure resumes normal CEC operation; success remains passive until
+        reboot. New images confirm only after MQTT connects and retained online
+        status receives PUBACK; an independent 60-second timer resets a still
+        pending image for bootloader rollback. OTA cannot install partitions.
+      parameters:
+        - name: X-Sha256
+          in: header
+          required: true
+          description: SHA-256 of the exact image bytes; hexadecimal, case insensitive, exactly 64 characters.
+          schema:
+            type: string
+            pattern: '^[0-9A-Fa-f]{64}$'
+          example: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        - name: Content-Length
+          in: header
+          required: true
+          description: Positive image size in bytes, no greater than the inactive OTA slot; chunked uploads are not supported.
+          schema:
+            type: integer
+            minimum: 1
+          example: 1000000
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw ESP-IDF application image, not a merged flash image or multipart form.
+      responses:
+        '202':
+          description: Verified image accepted; reboot follows, progress continues on ota events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OtaAccepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Busy'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/StorageError'
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: 32 random bytes encoded as 64 hex characters, provisioned in NVS; obtain only through serial show token. Send Authorization with the exact Bearer prefix and a space.
+  responses:
+    Unauthorized:
+      description: Missing or incorrect bearer token (reason unauthorized).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {const: unauthorized}
+          example: {ok: false, reason: unauthorized}
+    NotFound:
+      description: Unknown authenticated route, or telemetry sample not yet available (reason not_found).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {const: not_found}
+          example: {ok: false, reason: not_found}
+    BadRequest:
+      description: Malformed framing, JSON or upload headers/image (malformed), digest mismatch (sha256_mismatch), or wrong image project (project_mismatch); all other unlisted reasons also map to 400.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {enum: [malformed, sha256_mismatch, project_mismatch]}
+          example: {ok: false, reason: malformed}
+    Busy:
+      description: HTTP dispatch queue full/timed out, shutdown, OTA pending verification, or accepted upload awaiting reboot (reason busy).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {const: busy}
+          example: {ok: false, reason: busy}
+    TooLarge:
+      description: JSON body exceeds 2048 bytes or image exceeds inactive OTA slot (reason too_large).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {const: too_large}
+          example: {ok: false, reason: too_large}
+    StorageError:
+      description: Flash/NVS/update-slot failure (reason storage_error).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/HttpError'
+              - properties:
+                  reason: {const: storage_error}
+          example: {ok: false, reason: storage_error}
+    CommandSucceeded:
+      description: Command completed; ping also returns t_us and echo.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/CommandResult'
+              - properties:
+                  ok: {const: true}
+          example: {id: c-7, verb: ping, ok: true, t_us: 51000000, echo: abc}
+    CommandBadRequest:
+      description: |
+        Shared dispatcher errors are CommandResult-shaped (id omitted for
+        malformed JSON); pre-dispatch framing errors are HttpError-shaped.
+        Exact dispatcher codes: malformed, bad_node, bad_la, edid_unsupported,
+        bad_cec_gpio, bad_hpd_gpio, gpio_conflict, bad_ack, forbidden_reply,
+        confirm_mismatch. All map to 400; no user input is embedded in reasons.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/CommandResult'
+                  - properties:
+                      ok: {const: false}
+                      reason:
+                        enum: [malformed, bad_node, bad_la, edid_unsupported, bad_cec_gpio, bad_hpd_gpio, gpio_conflict, bad_ack, forbidden_reply, confirm_mismatch]
+                    required: [reason]
+              - allOf:
+                  - $ref: '#/components/schemas/HttpError'
+                  - properties:
+                      reason: {const: malformed}
+          example: {id: c-8, verb: cfg, ok: false, reason: forbidden_reply}
+    CommandBusy:
+      description: Command cannot currently be applied (busy); dispatcher retains command correlation, pre-dispatch failures do not.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/CommandResult'
+                  - properties:
+                      ok: {const: false}
+                      reason: {const: busy}
+                    required: [reason]
+              - allOf:
+                  - $ref: '#/components/schemas/HttpError'
+                  - properties:
+                      reason: {const: busy}
+          example: {ok: false, reason: busy}
+    CommandStorageError:
+      description: Command persistence failed (storage_error), no successful change.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/CommandResult'
+              - properties:
+                  ok: {const: false}
+                  reason: {const: storage_error}
+                required: [reason]
+          example: {id: c-8, verb: cfg, ok: false, reason: storage_error}
+  schemas:
+    RequestId:
+      type: string
+      maxLength: 16
+      x-maxUtf8Bytes: 16
+      description: Opaque host id, at most 16 UTF-8 bytes, echoed verbatim; host ensures uniqueness within the five-second result window. OTA ids are bridge-assigned o-<n>.
+      examples: [s-1041, c-7, o-1]
+    DeviceType:
+      type: string
+      enum: [tv, playback, audio, recorder, tuner]
+      description: CEC device type reported in 84 and used for logical-address allocation.
+      examples: [tv]
+    PhysicalAddress:
+      type: string
+      pattern: '^[0-9A-Fa-f](\.[0-9A-Fa-f]){3}$'
+      description: Four hexadecimal nibbles a.b.c.d; input accepts either case, output is uppercase.
+      examples: ['0.0.0.0', A.B.C.D]
+    HexData:
+      type: string
+      pattern: '^([0-9A-Fa-f]{2}){0,15}$'
+      maxLength: 30
+      description: Opcode plus operands, 0–15 bytes as even-length separator-free hex. Empty is a header-only poll; input accepts either case, output is uppercase. Header plus data fits all 16 CEC blocks.
+      examples: ['8F', '']
+    BusState:
+      type: string
+      enum: [ok, stuck_low, no_pullup]
+      description: ok is normal; stuck_low means low for over 100 ms without a valid frame; no_pullup means the line read low at boot.
+      examples: [ok]
+    ResetReason:
+      type: string
+      enum: [power_on, software, panic, int_wdt, task_wdt, brownout, other]
+      description: esp_reset_reason grouped into power-on, software, CPU panic, interrupt/task watchdog, brownout, or all other IDF causes.
+      examples: [software]
+    Status:
+      type: object
+      required: [online]
+      description: |
+        Retained status, also returned over HTTP. Offline/LWT is exactly
+        {"online":false}; online serialization includes la, bus and hpd even
+        when null. Other optional keys can be absent in older payloads.
+        Boot changes reset t_us and bus seq; no wall clock exists on-device.
+      properties:
+        online:
+          type: boolean
+          description: Connected/online flag; false is LWT and clean shutdown/restart.
+        v:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: Protocol schema version (currently 1); hosts refuse unknown versions. Absent in the minimal LWT.
+        fw:
+          type: string
+          maxLength: 24
+          x-maxUtf8Bytes: 24
+          description: Firmware semver, optionally dirty/git-sha in development; absent in minimal LWT.
+        boot:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: NVS boot counter, changes on every reset; absent in minimal LWT.
+        reset_reason:
+          $ref: '#/components/schemas/ResetReason'
+          description: Cause of this boot; new firmware includes it online, older status and minimal LWT omit it.
+        last_crash:
+          type: string
+          maxLength: 120
+          x-maxUtf8Bytes: 120
+          description: |
+            Previous panic/int_wdt/task_wdt boot's recovered valid ELF core dump:
+            <decimal EXCCAUSE> pc=<8 hex> task=<name> bt=<up to 8 comma-separated
+            8-hex PCs>. Task name is at most 16 printable non-whitespace ASCII
+            bytes. Symbolise against the crashing image's ELF. Absent when
+            unavailable; retained for this boot after clearing the stored dump.
+            Requires a USB-installed coredump partition; OTA cannot add it.
+        last_stage:
+          type: string
+          maxLength: 32
+          x-maxUtf8Bytes: 32
+          description: |
+            Previous boot's RTC checkpoint after panic/int_wdt/task_wdt:
+            <stage> t_ms=<uptime ms>. Stages pre_main, main, console, store, net,
+            mqtt, http, bus, loop; loop is refreshed each main-loop turn.
+            pre_main means IDF startup before main. Independent of core dumps;
+            always the immediately preceding boot. Absent after other reset
+            causes, invalid RTC record, or missing stage instrumentation.
+        t_us:
+          type: integer
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Monotonic microseconds since boot from esp_timer_get_time; absent in minimal LWT.
+        la:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 15
+          description: Logical address in use; null while allocating, 15 if none free; absent in minimal LWT.
+        pa:
+          $ref: '#/components/schemas/PhysicalAddress'
+          description: Effective physical address; absent in minimal LWT.
+        type:
+          $ref: '#/components/schemas/DeviceType'
+          description: Effective CEC device type; absent in minimal LWT.
+        ip:
+          type: string
+          maxLength: 45
+          x-maxUtf8Bytes: 45
+          description: Device IPv4 or IPv6 address text; absent in minimal LWT.
+        rssi:
+          type: integer
+          minimum: -32768
+          maximum: 32767
+          description: Wireless signal strength in dBm; absent in minimal LWT.
+        bus:
+          anyOf:
+            - $ref: '#/components/schemas/BusState'
+            - type: 'null'
+          description: Current line health, null before measurement; absent in minimal LWT.
+        hpd:
+          type: [boolean, 'null']
+          description: HPD input level, null when no HPD GPIO is configured; absent in minimal LWT.
+      examples:
+        - {online: true, v: 1, fw: 0.1.0, boot: 3, reset_reason: software, t_us: 1234567, la: 0, pa: 0.0.0.0, type: tv, ip: 192.0.2.66, rssi: -58, bus: ok, hpd: null}
+        - {online: false}
+        - {online: true, la: null, bus: null, hpd: null}
+    Healthz:
+      type: object
+      required: [online, fw, boot]
+      description: Public application liveness response; no provisioning information.
+      properties:
+        online:
+          type: boolean
+          description: Application is running (true in the handler), not MQTT availability.
+        fw:
+          type: string
+          maxLength: 24
+          x-maxUtf8Bytes: 24
+          description: Running firmware identifier.
+        boot:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: Persistent boot count.
+        reset_reason:
+          $ref: '#/components/schemas/ResetReason'
+          description: Cause of this boot; absent in older firmware.
+      examples:
+        - {online: true, fw: 0.2.0, boot: 3}
+    Config:
+      type: object
+      required: [node, la, type, pa, osd, vendor, cec_version, replies, ack, telemetry_s, allow_from, log, gpio]
+      description: Persisted effective CEC configuration; unknown keys ignored. Credentials and runtime power are not configuration fields.
+      properties:
+        node:
+          type: string
+          pattern: '^[a-z0-9-]{1,16}$'
+          description: MQTT topic component, default aether; changing takes effect after restart.
+        la:
+          oneOf:
+            - {type: integer, minimum: 0, maximum: 14}
+            - {const: auto}
+          description: Fixed 0–14 or auto allocation by type (TV 0/14, playback 4/8/11, audio 5), falling back to 15; default 0.
+        type:
+          $ref: '#/components/schemas/DeviceType'
+          description: Device role for Report Physical Address and allocation; default tv.
+        pa:
+          oneOf:
+            - $ref: '#/components/schemas/PhysicalAddress'
+            - {const: edid}
+          description: Fixed physical address (default 0.0.0.0) never consults EDID. edid requests sink DDC reading but currently fails edid_unsupported because no DDC GPIOs are provided.
+        osd:
+          type: string
+          maxLength: 14
+          x-maxUtf8Bytes: 14
+          description: OSD name returned in 47, at most 14 UTF-8 bytes; default Aether.
+        vendor:
+          type: string
+          pattern: '^[0-9A-Fa-f]{6}$'
+          description: Three vendor bytes for 87 in wire order, default 012345; input case insensitive, output uppercase (not Tasmota's reversed byte order).
+        cec_version:
+          type: string
+          enum: ['1.3a', '1.4', '2.0']
+          description: CEC version for 9E, bytes 04/05/06 respectively; default 1.4.
+        replies:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+            pattern: '^[0-9A-Fa-f]{2}$'
+          description: Local directed-opcode reply set; default 83/8C/8F/9F/46/91. 85 and 82 are refused with forbidden_reply. Never answers broadcasts or from=15; unlisted opcodes remain the host's responsibility, without automatic Feature Abort.
+        ack:
+          type: array
+          maxItems: 15
+          items: {type: integer, minimum: 0, maximum: 14}
+          description: Hardware-acknowledged logical addresses, default [la]; broadcasts are never NACKed. Bench use can acknowledge impersonated LAs.
+        telemetry_s:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          default: 60
+          description: Periodic telemetry interval in seconds; 0 disables publication.
+        allow_from:
+          type: boolean
+          default: false
+          description: Permit explicit bench/test tx.from overrides; otherwise any explicit from is rejected.
+        log:
+          type: string
+          enum: ['off', error, warn, info, debug]
+          default: 'off'
+          description: Optional MQTT log publication threshold; persisted but currently inert in firmware. Does not disable the HTTP log ring.
+        gpio:
+          type: object
+          required: [cec]
+          description: GPIO assignments; changes require restart. HPD is optional and currently remains unmeasured/null in status.
+          properties:
+            cec:
+              type: integer
+              minimum: 0
+              maximum: 255
+              description: Required open-drain CEC GPIO; supported ESP32 pins 2/4/5/12/13/14/15/16/17/18/19/21/22/23/25/26/27/32/33, default 4; invalid pins yield bad_cec_gpio.
+            hpd:
+              type: [integer, 'null']
+              minimum: 0
+              maximum: 255
+              description: Optional HPD GPIO, default null; same supported pins plus 34/35/36/39. Cannot equal CEC GPIO (gpio_conflict); unsupported pins yield bad_hpd_gpio.
+      examples:
+        - {node: aether, la: 0, type: tv, pa: 0.0.0.0, osd: Aether, vendor: '012345', cec_version: '1.4', replies: ['83', 8C, 8F, 9F, '46', '91'], ack: [0], telemetry_s: 60, allow_from: false, log: 'off', gpio: {cec: 4, hpd: null}}
+    ConfigPatch:
+      type: object
+      required: [id]
+      description: |
+        cmd/cfg wire object, also used by PUT /api/cfg. id is mandatory; other
+        fields are optional. Omitted or null top-level fields leave values
+        unchanged. gpio.hpd uniquely distinguishes omission (keep) from null
+        (disable). The merged whole is validated and persisted atomically.
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Required command correlation id.
+        node:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/node'}, {type: 'null'}]
+          description: Replacement topic component; effective after restart; omitted/null keeps current.
+        la:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/la'}, {type: 'null'}]
+          description: Replacement fixed 0–14 or auto address policy; omitted/null keeps current.
+        type:
+          anyOf: [{$ref: '#/components/schemas/DeviceType'}, {type: 'null'}]
+          description: Replacement device role; omitted/null keeps current.
+        pa:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/pa'}, {type: 'null'}]
+          description: Replacement physical-address policy; edid currently rejected at application time; omitted/null keeps current.
+        osd:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/osd'}, {type: 'null'}]
+          description: Replacement OSD name, at most 14 UTF-8 bytes; omitted/null keeps current.
+        vendor:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/vendor'}, {type: 'null'}]
+          description: Replacement three-byte vendor id in wire order; omitted/null keeps current.
+        cec_version:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/cec_version'}, {type: 'null'}]
+          description: Replacement CEC version; omitted/null keeps current.
+        replies:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/replies'}, {type: 'null'}]
+          description: Replacement local reply set; 85/82 refused by merged validation; omitted/null keeps current.
+        ack:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/ack'}, {type: 'null'}]
+          description: Replacement hardware acknowledgment set; omitted/null keeps current.
+        telemetry_s:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/telemetry_s'}, {type: 'null'}]
+          description: Replacement publication period, u16 seconds, 0 disables; omitted/null keeps current.
+        allow_from:
+          type: [boolean, 'null']
+          description: Replacement bench initiator permission; omitted/null keeps current.
+        log:
+          anyOf: [{$ref: '#/components/schemas/Config/properties/log'}, {type: 'null'}]
+          description: Replacement logging threshold; omitted/null keeps current.
+        gpio:
+          type: [object, 'null']
+          description: Partial GPIO replacement; omitted/null keeps current; GPIO changes need restart.
+          properties:
+            cec:
+              type: [integer, 'null']
+              minimum: 0
+              maximum: 255
+              description: Replacement CEC GPIO; omitted/null leaves unchanged, same supported pins as Config.gpio.cec.
+            hpd:
+              type: [integer, 'null']
+              minimum: 0
+              maximum: 255
+              description: Omitted leaves unchanged, null explicitly disables HPD; integer selects a supported HPD GPIO distinct from CEC.
+      examples:
+        - {id: c, pa: edid, la: auto, vendor: aBcD01, gpio: {hpd: null}}
+        - {id: c, gpio: {}}
+    TxRequest:
+      type: object
+      required: [id, to, data]
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Host-assigned id echoed in the final outcome; over 16 bytes yields id_too_long with id omitted.
+        to:
+          type: integer
+          minimum: 0
+          maximum: 15
+          description: Destination LA, 15=broadcast; invalid values yield bad_to.
+        data:
+          $ref: '#/components/schemas/HexData'
+          description: Opcode/operands, empty for poll. Over 30 bytes yields data_too_long; bad or odd-length hex yields data_not_hex. Lowercase accepted and normalized to uppercase.
+        retries:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 18446744073709551615
+          description: Optional NACK retransmissions, clamped to 4 (five attempts total); omitted/null defaults to 0 for polls, 1 otherwise. Arbitration/line errors retry within the same five-attempt cap regardless. Raw HTTP ingress accepts u64; typed TxRequest uses u8.
+        from:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 14
+          description: Bench-only initiator override, default own LA. Any explicit non-null from requires allow_from=true and 0–14, else from_not_allowed. No allocated LA yields no_la.
+      examples:
+        - {id: s-1041, to: 8, data: 8F}
+        - {id: s-1044, to: 8, data: ''}
+    BusEvent:
+      description: |
+        One ordered per-boot stream. seq increments for every event kind;
+        dedupe by (boot,seq). t_us is the frame start-bit falling edge for
+        rx/tx (final TX attempt), detection/validation time for errors/rejections,
+        interruption time for OTA-aborted busy TX. One final outcome per request;
+        no intermediate-attempt events. RX is promiscuous. Before MQTT connects,
+        up to 32 events are retained oldest-first for MQTT only; SSE has no replay.
+      oneOf:
+        - $ref: '#/components/schemas/Rx'
+        - $ref: '#/components/schemas/TxOutcome'
+        - $ref: '#/components/schemas/Err'
+        - $ref: '#/components/schemas/Line'
+      discriminator:
+        propertyName: ev
+        mapping:
+          rx: '#/components/schemas/Rx'
+          tx: '#/components/schemas/TxOutcome'
+          err: '#/components/schemas/Err'
+          line: '#/components/schemas/Line'
+      examples:
+        - {ev: rx, seq: 812, t_us: 48211034, from: 1, to: 0, data: '9000', ack: true}
+    Rx:
+      type: object
+      required: [ev, seq, t_us, from, to, data, ack]
+      description: Valid timing with EOM, or directed initiator stopped after a NACK (publishes received blocks even without EOM); other partial frames are Err.
+      properties:
+        ev: {const: rx, description: Received-frame discriminator.}
+        seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by every bus event kind.}
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Frame start-bit falling edge in microseconds since boot.}
+        from: {type: integer, minimum: 0, maximum: 15, description: Initiator header nibble; 15 means unregistered and never receives a local reply.}
+        to: {type: integer, minimum: 0, maximum: 15, description: Destination header nibble; 15 is broadcast.}
+        data:
+          $ref: '#/components/schemas/HexData'
+          description: Received opcode/operands, empty for poll, uppercase on output.
+        ack:
+          type: boolean
+          description: Last block's observed ACK; directed true means somebody pulled low, broadcast true means nobody did. Requested hardware ACK never overrides observed level; own TX never triggers follower ACK.
+      examples:
+        - {ev: rx, seq: 812, t_us: 48211034, from: 1, to: 0, data: '9000', ack: true}
+    TxOutcome:
+      type: object
+      required: [ev, seq, t_us, origin, status]
+      description: |
+        One final result per host request or local auto-reply. NACK retries are
+        separate from arbitration/line-error retries but share five total
+        attempts. Final classification describes the last attempt, not earlier
+        failures. Completed RX is drained before publishing the final TX event.
+      properties:
+        ev: {const: tx, description: Transmission-outcome discriminator.}
+        seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by all bus events.}
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Final attempt's start bit; validation time for rejected or interruption time for OTA busy.}
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Echoed host id; absent for local origin and when unavailable (id_too_long or malformed).
+        origin: {type: string, enum: [host, local], description: Host-submitted request or firmware-local auto-reply.}
+        from: {type: integer, minimum: 0, maximum: 15, description: Actual initiator; may be absent if validation failed before choosing it.}
+        to: {type: integer, minimum: 0, maximum: 15, description: Actual/requested destination; absent for rejected invalid or unavailable destinations. Required on non-rejected outcomes.}
+        data:
+          type: string
+          maxLength: 30
+          x-maxUtf8Bytes: 30
+          description: Actual opcode/operands as hex; rejected events can retain bounded malformed text such as ZZ. Absent if unavailable or longer than 30 UTF-8 bytes. Required and valid hex unless rejected.
+        status:
+          type: string
+          enum: [ack, nack, arb_lost, line_error, busy, rejected]
+          description: |
+            ack=last block acknowledged; nack=a block unacknowledged on final
+            attempt; arb_lost=lost header arbitration; line_error=collision,
+            bad level or missed sample deadline; busy=queue full, continuously
+            busy bus over 2 s, or active request interrupted by OTA;
+            rejected=request validation failed. Only nack is absence evidence.
+        attempts:
+          type: integer
+          minimum: 0
+          maximum: 255
+          description: Number of start bits sent (normally 1–5); absent for rejected/busy. Optional u8 in serde.
+        reason:
+          type: string
+          enum: [id_too_long, bad_to, data_not_hex, data_too_long, from_not_allowed, no_la, malformed]
+          description: Only for rejected; no_la means no allocated bridge LA; malformed covers ingress JSON/types/overflow/bounds.
+        reply_to:
+          type: object
+          required: [seq]
+          description: Only for local origin; identifies the triggering receive event.
+          properties:
+            seq: {type: integer, minimum: 0, maximum: 4294967295, description: Sequence of the RX that triggered the local reply.}
+      allOf:
+        - if:
+            properties:
+              status: {not: {const: rejected}}
+          then:
+            required: [to, data]
+            properties:
+              data:
+                $ref: '#/components/schemas/HexData'
+      examples:
+        - {ev: tx, seq: 815, t_us: 48512000, id: s-1041, origin: host, from: 0, to: 8, data: 8F, status: ack, attempts: 1}
+        - {ev: tx, seq: 818, t_us: 48600001, id: s-1050, origin: host, to: 4, data: ZZ, status: rejected, reason: data_not_hex}
+    Err:
+      type: object
+      required: [ev, seq, t_us, kind]
+      description: At most one decoder error per frame until a new start; overrun reports lost ring/event/MQTT events. Optional evidence is absent in older firmware.
+      properties:
+        ev: {const: err, description: Decode-error/overrun discriminator.}
+        seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by all bus events.}
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Error detection time in microseconds since boot.}
+        kind:
+          type: string
+          enum: [start_bit, bit_timing, eom_missing, line_low, overrun]
+          description: Bad start timing; bad data timing; 16 blocks without EOM; low past maximum start interval (not the 100-ms bus-health threshold); or buffer/outbox overflow.
+        from: {type: [integer, 'null'], minimum: 0, maximum: 15, description: Initiator when decoded; absent or null when unavailable. Serializer omits absent values.}
+        to: {type: [integer, 'null'], minimum: 0, maximum: 15, description: Destination when decoded; absent or null when unavailable. Serializer omits absent values.}
+        bits: {type: integer, minimum: 0, maximum: 255, description: Data bits decoded before failure; absent if unavailable.}
+        dropped: {type: integer, minimum: 0, maximum: 4294967295, description: Events lost during overrun; absent for ordinary decoder errors.}
+        level: {type: string, enum: [high, low], description: Failing edge's reported level; absent for edge-free timeouts and overruns.}
+        same_level: {type: boolean, description: Failing edge repeated previous edge level (glitch pair or merged edge); optional.}
+        dur_us: {type: integer, minimum: 0, maximum: 4294967295, description: Failed fall-to-fall period or low width or timeout since last fall; same-level/out-of-order failures instead use saturating t-minus-last-fall (no window compared). Saturated to u32; optional.}
+        gap_us: {type: integer, minimum: 0, maximum: 4294967295, description: Microseconds since previous edge of either level; saturates to u32; zero for timeout/out-of-order edges; optional.}
+        bit: {type: integer, minimum: 0, maximum: 9, description: In-progress/due bit 0–7 data or 8 EOM or 9 ACK; absent at start. Falling-edge/high-timeout failed interval belongs to bit-minus-one (0 means prior block ACK).}
+        hist:
+          type: array
+          maxItems: 8
+          items: {type: integer, minimum: 0, maximum: 4294967295}
+          description: Previous inter-edge microsecond intervals oldest-first, reset at start fall. First may be idle gap; failing interval appears only in gap_us. Optional.
+      examples:
+        - {ev: err, seq: 826, t_us: 48900100, kind: bit_timing, from: 4, to: 0, bits: 40, level: low, same_level: false, dur_us: 1900, gap_us: 1170, bit: 8, hist: [1790, 1500, 900, 620, 1780, 1510, 890, 730]}
+        - {ev: err, seq: 820, t_us: 48711000, kind: overrun, dropped: 4}
+    Line:
+      type: object
+      required: [ev, seq, t_us]
+      description: Change-only bus health/HPD/address event, mirrored into status (which is republished on allocation).
+      properties:
+        ev: {const: line, description: Line/address-change discriminator.}
+        seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by all bus events.}
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Change detection time in microseconds since boot.}
+        bus:
+          $ref: '#/components/schemas/BusState'
+          description: Present when bus health changes; low over 100 ms emits stuck_low once, recovery emits ok once.
+        hpd: {type: boolean, description: Present only when HPD input changes.}
+        la: {type: integer, minimum: 0, maximum: 15, description: Present when allocation completes; 15 means no address free.}
+      examples:
+        - {ev: line, seq: 821, t_us: 48800000, bus: stuck_low}
+    TxCounters:
+      type: object
+      required: [host, local, ack, nack, arb_lost, line_error, busy, rejected, retransmits]
+      description: Per-boot monotonic TX counters. Six optional line-error detail counters default to zero on older payloads and partition line_error (first cause only per aborted attempt).
+      properties:
+        host: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Host requests this boot.}
+        local: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Firmware-local replies this boot.}
+        ack: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Final acknowledged request outcomes.}
+        nack: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Final NACK request outcomes.}
+        arb_lost: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Failed arbitration attempts including ones hidden by later success.}
+        line_error: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Failed line-error attempts including ones hidden by later success.}
+        busy: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Final busy request outcomes.}
+        rejected: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Request validation failures.}
+        retransmits: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Additional bus attempts after the first.}
+        origin_missing: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: No block-origin edge within 300 microseconds of RMT submission for fresh header or predicted chained start. Absent in older telemetry.}
+        sample_late: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: Missing/late sample attempts; absent in older telemetry.}
+        launch_rejected: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: Bus-acquisition/chaining/RMT launch rejection attempts; absent in older telemetry.}
+        echo_error: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: Malformed own-echo attempts; absent in older telemetry.}
+        edge_overrun: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: Lost GPIO edge attempts during TX; absent in older telemetry.}
+        driven_low_mismatch: {type: integer, minimum: 0, maximum: 18446744073709551615, default: 0, description: Driven zero sampled High attempts; absent in older telemetry.}
+      examples:
+        - {host: 1, local: 0, ack: 1, nack: 0, arb_lost: 2, line_error: 0, busy: 0, rejected: 0, retransmits: 4}
+    Telemetry:
+      type: object
+      required: [t_us, boot, rssi, link_count, heap_free, heap_min, rx, tx, queue, outbox_dropped]
+      description: Per-boot monotonic counters and health; periodic interval defaults to 60 s, 0 disables publication. Choregos maps rssi/link_count/t_us to signal/connect count/uptime and evaluates deltas for bus health.
+      properties:
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Monotonic microseconds since boot; divide by one million for uptime seconds.}
+        boot: {type: integer, minimum: 0, maximum: 4294967295, description: Persistent boot counter; scopes monotonic counters.}
+        rssi: {type: integer, minimum: -32768, maximum: 32767, description: Wi-Fi signal strength in dBm.}
+        link_count: {type: integer, minimum: 0, maximum: 4294967295, description: Number of MQTT connections this boot.}
+        heap_free: {type: integer, minimum: 0, maximum: 4294967295, description: Current free heap bytes.}
+        heap_min: {type: integer, minimum: 0, maximum: 4294967295, description: Minimum free heap bytes this boot.}
+        heap_largest: {type: integer, minimum: 0, maximum: 4294967295, description: 'Largest contiguous MALLOC_CAP_8BIT free block in bytes; optional in older telemetry, always included by new firmware. Compare against heap_free for fragmentation.'}
+        rx:
+          type: object
+          required: [frames, errors, acked_by_us]
+          description: Per-boot receive counters.
+          properties:
+            frames: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Valid complete or NACK-terminated frames received.}
+            errors: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Receive decode failures.}
+            acked_by_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Frames acknowledged by this bridge.}
+        tx:
+          $ref: '#/components/schemas/TxCounters'
+          description: Per-boot transmit request/attempt counters, including optional line-error causes.
+        queue:
+          type: object
+          required: [depth, max]
+          description: Host CEC request queue, capacity 16; depth excludes the active request.
+          properties:
+            depth: {type: integer, minimum: 0, maximum: 16, description: Requests currently waiting in the queue.}
+            max: {type: integer, minimum: 0, maximum: 255, description: Queue maximum; current firmware reports capacity 16 (Rust type calls it high-water mark).}
+        outbox_dropped: {type: integer, minimum: 0, maximum: 18446744073709551615, description: MQTT enqueue/expiry losses; a later ordered overrun event reports accumulated drops. Disconnection alone does not count as loss.}
+      examples:
+        - t_us: 60000123
+          boot: 3
+          rssi: -58
+          link_count: 1
+          heap_free: 168000
+          heap_min: 150000
+          rx: {frames: 1531, errors: 2, acked_by_us: 303}
+          tx: {host: 765, local: 120, ack: 740, nack: 37, arb_lost: 3, line_error: 0, busy: 0, rejected: 1, retransmits: 12, origin_missing: 0, sample_late: 0, launch_rejected: 0, echo_error: 0, edge_overrun: 0, driven_low_mismatch: 0}
+          queue: {depth: 0, max: 16}
+          outbox_dropped: 0
+    LogLine:
+      type: object
+      required: [t_us, lvl, msg]
+      description: Optional diagnostic record, never credentials; HTTP retains up to 64 regardless of cfg.log.
+      properties:
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Monotonic microseconds since boot.}
+        lvl: {type: string, enum: ['off', error, warn, info, debug], description: Severity using the LogLevel wire enum; off is a configuration threshold rather than an emitted severity.}
+        msg: {type: string, maxLength: 160, x-maxUtf8Bytes: 160, description: 'Human-readable scrubbed diagnostic, at most 160 UTF-8 bytes.'}
+      examples:
+        - {t_us: 1, lvl: warn, msg: line fault}
+    CommandResult:
+      type: object
+      required: [verb, ok]
+      description: |
+        Shared MQTT/HTTP command outcome. Optional fields are omitted when
+        unavailable. reason is a bounded string in serde, not an enum (legacy
+        protocol examples use prose); actual HTTP dispatcher codes and status
+        mappings are enumerated in operation response definitions.
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Echoed command id; absent when ingress JSON is malformed.
+        verb: {type: string, enum: [cfg, state, ping, restart, reset], description: Verb selected by HTTP route/MQTT topic; never used to select a request from its body.}
+        ok: {type: boolean, description: Whether the command succeeded.}
+        reason: {type: string, maxLength: 32, x-maxUtf8Bytes: 32, description: Failure detail; absent on successful commands. Current dispatcher returns static codes rather than prose.}
+        t_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Device time for ping responses; absent for other verbs.}
+        echo: {type: string, maxLength: 32, x-maxUtf8Bytes: 32, description: 'Ping echo value, at most 32 UTF-8 bytes; absent for other verbs.'}
+      examples:
+        - {id: c-7, verb: ping, ok: true, t_us: 51000000, echo: abc}
+        - {id: c-8, verb: cfg, ok: false, reason: 'replies: opcode 85 not allowed'}
+        - {verb: ping, ok: false, reason: malformed}
+    HttpError:
+      type: object
+      required: [ok, reason]
+      description: Uniform transport/framing/upload error. Commands that reach the shared dispatcher instead return CommandResult with additional verb/id fields. Exact currently emitted HTTP codes are listed here; error_status maps all other reasons to 400.
+      properties:
+        ok: {const: false, description: Always false.}
+        reason:
+          type: string
+          enum: [unauthorized, not_found, too_large, busy, storage_error, malformed, sha256_mismatch, project_mismatch, bad_node, bad_la, edid_unsupported, bad_cec_gpio, bad_hpd_gpio, gpio_conflict, bad_ack, forbidden_reply, confirm_mismatch]
+          description: unauthorized=401; not_found=404; too_large=413; busy=409; storage_error=500; every remaining listed reason=400. TX validation codes occur asynchronously on BusEvent instead.
+      examples:
+        - {ok: false, reason: unauthorized}
+    OtaAccepted:
+      type: object
+      required: [id]
+      description: Returned only after image verified, pending record persisted and next boot partition selected.
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Bridge-assigned o-<n> id; id and target slot survive reboot in NVS for attribution, not to decide bootloader pending state.
+      examples:
+        - {id: o-1}
+    OtaProgress:
+      type: object
+      required: [id, state]
+      description: Same OTA lifecycle notification on MQTT ota and SSE event ota. After reboot the new image reports confirmed or old image rolled_back.
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Original bridge-assigned OTA id, preserved across reboot.
+        state:
+          type: string
+          enum: [receiving, verifying, rebooting, failed, confirmed, rolled_back]
+          description: Streaming inactive slot; verifying digest/project; restarting; failure; MQTT status PUBACK confirmed new image; or bootloader restored old image.
+        pct: {type: integer, minimum: 0, maximum: 100, description: 'Received percentage, emitted only while receiving and only when changed; absent in other states.'}
+        fw: {type: string, maxLength: 24, x-maxUtf8Bytes: 24, description: 'Target/running firmware version, notably after reboot; absent when unavailable.'}
+        reason: {type: string, maxLength: 32, x-maxUtf8Bytes: 32, description: 'Failure detail, e.g. sha256_mismatch; absent on normal progress. Bounded string in serde rather than an enum.'}
+      examples:
+        - {id: o-1, state: receiving, pct: 37}
+        - {id: o-1, state: failed, reason: sha256_mismatch}
+        - {id: o-1, state: confirmed, fw: 0.2.0}
+    PingRequest:
+      type: object
+      required: [id, echo]
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Required host command id.
+        echo: {type: string, maxLength: 32, x-maxUtf8Bytes: 32, description: 'Required opaque ping text, at most 32 UTF-8 bytes, echoed in the result.'}
+      examples:
+        - {id: c, echo: abc}
+    StateRequest:
+      type: object
+      required: [id, power]
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Required host command id (also required for state despite the abbreviated protocol table).
+        power: {type: string, enum: ['on', standby, to_on, to_standby], description: 'Local 8F reply state; maps to CEC 90 bytes 00/01/02/03 respectively, not persisted, boots on.'}
+      examples:
+        - {id: c, power: to_standby}
+    RestartRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Required host command id.
+      examples:
+        - {id: c}
+    ResetRequest:
+      type: object
+      required: [id, confirm]
+      properties:
+        id:
+          $ref: '#/components/schemas/RequestId'
+          description: Required host command id.
+        confirm: {type: string, maxLength: 16, x-maxUtf8Bytes: 16, description: Configured node name confirming reset; mismatch returns confirm_mismatch.}
+      examples:
+        - {id: c, confirm: aether}
