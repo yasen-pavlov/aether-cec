@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Header states</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+p{margin:0}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.pair{display:grid;grid-template-columns:1280px 390px;gap:24px;align-items:start}
+.fr{border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.head{display:flex;align-items:center;gap:4px 16px;min-height:44px;padding:4px 12px;white-space:nowrap;overflow:hidden}
+.ph .head{gap:4px 12px}
+.brand{font:600 14px/20px var(--mono)}
+.st{display:flex;align-items:center;gap:6px;font:12px/16px var(--mono)}
+.st.live{color:var(--primary)}.st.recon{color:var(--primary)}.st.none{color:var(--on-surface-variant)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.live .dot{background:var(--primary)}
+.recon .dot{border:2px solid var(--primary)}
+.none .dot{border:2px solid var(--on-surface-variant)}
+.hk{display:flex;align-items:baseline;gap:6px}
+.hk>span:first-child{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.hk>span:last-child{font:13px/20px var(--mono);font-variant-numeric:tabular-nums}
+.hk>.v-ok{color:var(--hover)}
+.hk>.v-dim{color:var(--on-surface-variant)}
+.hk>.v-bad{padding:0 5px;border-radius:6px;background:var(--error);color:var(--on-error);font-size:12px}
+.hk>.v-wait{padding:0 5px;border:1px solid var(--primary);border-radius:6px;color:var(--primary);font-size:12px;line-height:18px}
+.grow{flex:1 1 auto}
+.tok{display:flex;align-items:center;gap:8px}
+.tok input,.inp{height:28px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.tok input{width:112px}
+.tok input.want{width:220px;border:2px solid var(--primary)}
+.inp::placeholder,.tok input::placeholder{color:var(--on-surface);opacity:1}
+.lab{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.btn{display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px;white-space:nowrap}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.ph .btn,.ph .inp{height:44px}
+.band{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:8px 12px;border-top:1px solid var(--outline)}
+.b-err{background:var(--error);border-top-color:var(--error);color:var(--on-error)}
+.b-err .btn{border-color:var(--on-error);color:var(--on-error)}
+.b-n{background:var(--surface-variant)}
+.band strong{font:600 14px/20px var(--sans)}
+.band .mono{font:13px/20px var(--mono);word-break:break-word}
+.band .txt{flex:1 1 auto;min-width:0}
+.ph .band .txt{flex-basis:100%}
+.band form{display:flex;gap:8px;width:100%}
+.band form .inp{flex:1;min-width:0}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1758px; min-height: 1160px; padding: 32px; display: flex; flex-direction: column; gap: 24px; background: var(--surface)">
+
+  <sc-for list="{{states}}" as="s" hint-placeholder-count="7">
+    <section style="display: flex; flex-direction: column; gap: 8px">
+      <span class="cap">{{s.cap}}</span>
+      <div class="pair">
+        <div class="fr">
+          <header class="head">
+            <div class="st {{s.lc}}"><span class="dot"></span><span>{{s.ll}}</span></div>
+            <span class="brand">{{s.node}}</span>
+            <sc-for list="{{s.cells}}" as="c" hint-placeholder-count="7"><div class="hk"><span>{{c.k}}</span><span class="{{c.vc}}">{{c.v}}</span></div></sc-for>
+            <span class="grow"></span>
+            <div class="tok">
+              <label class="lab" for="t{{s.i}}">Token</label>
+              <sc-if value="{{s.hasTok}}" hint-placeholder-val="{{ true }}">
+                <input id="t{{s.i}}" type="password" value="sample-token" autocomplete="off"><button class="btn" type="button">Forget</button>
+              </sc-if>
+              <sc-if value="{{s.noTok}}" hint-placeholder-val="{{ false }}">
+                <input id="t{{s.i}}" class="want" type="password" value="" placeholder="paste token" autocomplete="off"><button class="btn pri" type="button">Save</button>
+              </sc-if>
+            </div>
+          </header>
+          <sc-if value="{{s.hasBand}}" hint-placeholder-val="{{ false }}">
+            <div class="band {{s.bc}}">
+              <div class="txt"><strong>{{s.title}}</strong><sc-if value="{{s.hasMono}}" hint-placeholder-val="{{ false }}"><div class="mono">{{s.mono}}</div><div class="mono">{{s.mono2}}</div></sc-if></div>
+              <sc-if value="{{s.hasBtn}}" hint-placeholder-val="{{ false }}"><button class="btn" type="button">{{s.btn}}</button></sc-if>
+            </div>
+          </sc-if>
+        </div>
+        <div class="fr ph">
+          <header class="head">
+            <div class="st {{s.lc}}"><span class="dot"></span><span>{{s.lp}}</span></div>
+            <span class="brand">{{s.node}}</span>
+            <sc-for list="{{s.pcells}}" as="c" hint-placeholder-count="3"><div class="hk"><span>{{c.k}}</span><span class="{{c.vc}}">{{c.v}}</span></div></sc-for>
+          </header>
+          <sc-if value="{{s.hasBand}}" hint-placeholder-val="{{ false }}">
+            <div class="band {{s.bc}}">
+              <div class="txt"><strong>{{s.ptitle}}</strong><sc-if value="{{s.hasMono}}" hint-placeholder-val="{{ false }}"><div class="mono">{{s.mono}}</div><div class="mono">{{s.mono2}}</div></sc-if></div>
+              <sc-if value="{{s.hasBtn}}" hint-placeholder-val="{{ false }}"><button class="btn" type="button">{{s.btn}}</button></sc-if>
+              <sc-if value="{{s.noTok}}" hint-placeholder-val="{{ false }}"><form><input class="inp" type="password" value="" placeholder="paste token" aria-label="API token" autocomplete="off"><button class="btn pri" type="button">Save</button></form></sc-if>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </section>
+  </sc-for>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1758,"height":1160}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const base = (i, cap, o) => {
+      const v = Object.assign({ bus:['ok','v-ok'], la:['0 TV',''], pa:['0.0.0.0',''], hpd:['high',''], rssi:['−58',''], up:['3d 04:12:07',''], boot:['128 software',''], fw:['0.0.0+0faa1746',''], lc:'live', ll:'live', lp:'live', node:'aether', tok:true, band:null }, o);
+      const cell = (k, x) => ({ k, v:x[0], vc:x[1] });
+      const b = v.band;
+      return {
+        i, cap, lc:v.lc, ll:v.ll, lp:v.lp, node:v.node, hasTok:v.tok, noTok:!v.tok,
+        cells:[cell('bus',v.bus), cell('LA',v.la), cell('PA',v.pa), cell('HPD',v.hpd), cell('RSSI',v.rssi), cell('up',v.up), cell('boot',v.boot), cell('fw',v.fw)],
+        pcells:[cell('bus',v.bus), cell('LA',[v.la[0].split(' ')[0],v.la[1]]), cell('RSSI',v.rssi)],
+        hasBand:!!b, bc:b ? b.c : '', title:b ? b.t : '', ptitle:b ? (b.p || b.t) : '', hasMono:!!(b && b.m), mono:b ? b.m : '', mono2:b ? b.m2 : '', hasBtn:!!(b && b.btn), btn:b ? b.btn : ''
+      };
+    };
+    const stale = { bus:['ok','v-dim'], la:['0 TV','v-dim'], pa:['0.0.0.0','v-dim'], hpd:['high','v-dim'], rssi:['−58','v-dim'], up:['3d 04:12:07','v-dim'], boot:['128 software','v-dim'], fw:['0.0.0+0faa1746','v-dim'] };
+    const none = ['—','v-dim'];
+    return {
+      states:[
+        base(1, 'Normal. bus null shows a dash; hpd null hides the field. On phone the chevron opens the rest.', {}),
+        base(2, 'No logical address yet. la is null while allocating; Send is disabled.', { la:['allocating','v-wait'] }),
+        base(3, 'Bus stuck_low. The band stays until a line ok event; it cannot be dismissed.', { bus:['stuck_low','v-bad'], band:{ c:'b-err', t:'CEC line stuck low. No frame can pass until it is released.' } }),
+        base(4, 'Bus no_pullup. Same band, different wording.', { bus:['no_pullup','v-bad'], band:{ c:'b-err', t:'CEC line read low at boot. Check the pull-up and wiring.' } }),
+        base(5, 'Previous boot crashed. Dismissal is remembered per boot number, so the next crash shows again.', { boot:['129 panic','v-bad'], up:['0d 00:01:12',''], band:{ c:'b-err', t:'Previous boot crashed', m:'last_stage  loop t_ms=310513', m2:'last_crash  28 pc=400d1a2c task=cec-bus bt=400d1a2c,400d2b10,40081234', btn:'Dismiss' } }),
+        base(6, 'Stream lost. Values dim to show they are stale; the monitor keeps its rows and adds a gap marker on return.', Object.assign({}, stale, { lc:'recon', ll:'reconnecting', lp:'retry', band:{ c:'b-n', t:'Event stream lost 12 s ago. Retrying every 2 s. Values shown are stale.', p:'Stream lost 12 s ago. Retrying.' } })),
+        base(7, 'First visit, no token. /healthz still gives fw, boot and reset reason; everything else waits.', { lc:'none', ll:'no token', lp:'no token', node:'aether', tok:false, bus:none, la:none, pa:none, hpd:none, rssi:none, up:none, band:{ c:'b-n', t:'No API token in this browser. Paste it to connect. show token on the serial console prints it.', p:'No API token in this browser. show token on the serial console prints it.' } })
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

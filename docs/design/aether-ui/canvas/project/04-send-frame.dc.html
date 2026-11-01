@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Send frame</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--secondary)}a:hover{color:var(--hover)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+h2{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.sec{display:flex;flex-direction:column;gap:8px}
+.tabs{display:flex;padding:0 4px;background:var(--surface-variant);border:1px solid var(--outline);border-bottom:0;border-radius:10px 10px 0 0}
+.tab{flex:1;height:44px;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;font-size:13px}
+.tab[aria-pressed="true"]{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+.rail{padding:12px;background:var(--surface-variant);border:1px solid var(--outline);border-top-color:var(--surface-variant);border-radius:0 0 10px 10px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld>label,.fld>span{font:12px/16px var(--sans)}
+.inp{width:100%;height:32px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.inp.bad{border:2px solid var(--error)}
+.inp:disabled{opacity:1;border-style:dashed}
+.fld>.dec{min-height:20px;font:13px/20px var(--mono)}
+.fld>.warn{align-self:flex-start;max-width:100%;padding:2px 6px;border-radius:6px;background:var(--error);color:var(--on-error)}
+.fld>.hint,.hint{font:12px/16px var(--sans);color:var(--on-surface)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px;white-space:nowrap}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.btn:disabled{background:var(--outline);border-color:var(--outline);color:var(--on-surface);font-weight:400}
+.res{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-height:20px;font:13px/20px var(--mono)}
+.sep{height:1px;margin:0;background:var(--outline);border:0}
+.pres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.pre{display:flex;gap:6px;align-items:center;height:28px;padding:0 6px;background:transparent;border:1px solid var(--outline);border-radius:6px;font-size:12px;white-space:nowrap;overflow:hidden}
+.pre b{font:12px/16px var(--mono)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:12px/16px var(--mono);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hover)}
+.s-bad{background:var(--error);border-color:var(--error);color:var(--on-error)}
+.s-n{border-color:var(--outline);color:var(--on-surface)}
+.s-rej{border-color:var(--error);color:var(--error)}
+.s-send{border-color:var(--primary);color:var(--primary)}
+.s-send::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--primary)}
+.row{position:relative;display:grid;grid-template-columns:44px 96px 32px 234px 132px minmax(0,1fr) 108px;grid-template-areas:"q t k r h d s";column-gap:8px;align-items:center;height:24px;padding:0 8px;font:13px/24px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.row>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.row.hd{background:var(--surface-variant);border-bottom:1px solid var(--outline);font:12px/24px var(--sans)}
+.q{grid-area:q;color:var(--on-surface-variant)}.t{grid-area:t;color:var(--on-surface-variant)}
+.k{grid-area:k;color:var(--on-surface);font-weight:600}
+.rt{grid-area:r;display:grid;grid-template-columns:2ch 13ch 1ch 2ch minmax(0,1fr);column-gap:1ch}
+.rt>*{overflow:hidden;text-overflow:ellipsis}.n{text-align:right}.ar{color:var(--on-surface-variant)}
+.hx{grid-area:h}.d{grid-area:d}.d.bad{color:var(--error)}
+.s{grid-area:s;display:flex;align-items:center}
+.fl-ok{box-shadow:inset 0 0 0 1px var(--hover)}.fl-bad{box-shadow:inset 0 0 0 1px var(--error)}.fl-n{box-shadow:inset 0 0 0 1px var(--outline)}.fl-send{box-shadow:inset 0 0 0 1px var(--primary)}
+.ln{display:grid;grid-template-columns:924px 176px minmax(0,1fr);column-gap:12px;align-items:center;min-height:40px;border-bottom:1px solid var(--surface-variant)}
+.echo{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;background:var(--surface-variant);border-radius:6px;font:13px/20px var(--mono);white-space:nowrap;overflow:hidden}
+.note{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1416px; min-height: 1100px; padding: 32px; display: flex; flex-direction: column; gap: 32px; background: var(--surface)">
+
+  <section style="display: grid; grid-template-columns: repeat(4, 320px); gap: 24px; align-items: start">
+    <sc-for list="{{forms}}" as="f" hint-placeholder-count="3">
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <span class="cap">{{f.cap}}</span>
+        <div>
+          <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="true">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+          <form class="rail stack">
+            <div class="two">
+              <div class="fld"><label for="to{{f.i}}">To</label><select id="to{{f.i}}" class="inp"><option>{{f.to}}</option></select></div>
+              <div class="fld"><label for="re{{f.i}}">Retries</label><select id="re{{f.i}}" class="inp"><option>{{f.re}}</option></select></div>
+            </div>
+            <div class="fld"><label for="da{{f.i}}">Data, hex</label><input id="da{{f.i}}" class="inp" value="{{f.data}}" spellcheck="false"><span class="dec">{{f.dec}}</span></div>
+            <button class="btn pri" type="submit" disabled="{{f.busy}}">{{f.btn}}</button>
+            <div class="res" aria-live="polite">
+              <sc-if value="{{f.hasRes}}" hint-placeholder-val="{{ false }}"><span class="chip {{f.sc}}">{{f.st}}</span><span>{{f.id}}</span><a href="#row">{{f.seq}}</a></sc-if>
+            </div>
+            <hr class="sep">
+            <div class="fld"><span>Presets fill the form; nothing is sent until Send.</span>
+              <div class="pres">
+                <sc-for list="{{presets}}" as="p" hint-placeholder-count="8"><button class="pre" type="button"><b>{{p.code}}</b>{{p.label}}</button></sc-for>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </sc-for>
+
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <span class="cap">Form-level states, changed parts only</span>
+      <div class="rail stack" style="border-radius: 10px; border-color: var(--outline)">
+        <div class="fld"><label for="d1">Data, hex</label><input id="d1" class="inp bad" value="8" spellcheck="false"><span class="warn">Not hex pairs. The device will answer data_not_hex.</span></div>
+        <hr class="sep">
+        <div class="two">
+          <div class="fld"><label for="d2">Data, hex</label><input id="d2" class="inp" value="" placeholder="empty = poll"></div>
+          <div class="fld"><label for="r2">Retries</label><select id="r2" class="inp" disabled="{{ true }}"><option>0, poll</option></select></div>
+        </div>
+        <span class="hint">Polls are sent once. A NACK here is evidence, not a failure.</span>
+        <hr class="sep">
+        <button class="btn pri" type="button" disabled="{{ true }}">Send</button>
+        <span class="hint">No logical address yet. Sending would answer no_la.</span>
+        <hr class="sep">
+        <button class="btn pri" type="button" disabled="{{ true }}">Send</button>
+        <span class="hint">No API token stored. Add one in the header.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>How the outcome lands in the monitor</h2>
+    <div class="ln"><div class="row hd"><span style="grid-area: q">seq</span><span style="grid-area: t">uptime</span><span style="grid-area: k">kind</span><span style="grid-area: r">from → to</span><span style="grid-area: h">hex</span><span style="grid-area: d">decoded</span><span style="grid-area: s">status</span></div><span class="cap">Echo in the Send panel</span><span class="cap">Rule</span></div>
+    <sc-for list="{{life}}" as="r" hint-placeholder-count="8">
+      <div class="ln">
+        <div class="row {{r.fl}}">
+          <span class="q">{{r.seq}}</span><span class="t">{{r.t}}</span><span class="k">tx</span>
+          <span class="rt"><span class="n">0</span><span>TV</span><span class="ar">→</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+          <span class="hx">{{r.hex}}</span><span class="d {{r.dc}}">{{r.dec}}</span>
+          <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+        </div>
+        <div class="echo"><span class="chip {{r.ec}}">{{r.st}}</span><span>w-{{r.n}}</span></div>
+        <p class="note">{{r.note}}</p>
+      </div>
+    </sc-for>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1416,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const life = [
+      ['', '', 'sending', 's-send', 's-send', 'fl-send', 8, 'Playback 2', '8F', 'Give Device Power Status', 18, 'Click on Send adds this row at once with no seq, marked by the id the page assigned. POST /api/tx returns 202 and the result follows on the stream.'],
+      ['18431', '04:12:09.118', 'ack', 's-ack', 's-ack', 'fl-ok', 4, 'Apple TV', '8F', 'Give Device Power Status', 19, 'The tx event with the same id fills in seq and uptime and swaps status in place. The outline fades after 1 s.'],
+      ['18433', '04:12:09.340', 'nack ×2', 's-bad', 's-bad', 'fl-bad', 8, 'Playback 2', '8F', 'Give Device Power Status', 20, 'Same swap. Retry count comes from attempts.'],
+      ['18434', '04:12:09.512', 'arb_lost ×3', 's-n', 's-n', 'fl-n', 4, 'Apple TV', '36', 'Standby', 21, 'Lost arbitration on the last of 3 attempts.'],
+      ['18436', '04:12:09.790', 'line_error ×5', 's-bad', 's-bad', 'fl-bad', 4, 'Apple TV', '36', 'Standby', 22, 'Final attempt failed on the line.'],
+      ['18437', '04:12:09.800', 'busy', 's-n', 's-n', 'fl-n', 5, 'AVR-X3800H', '70 00 00', 'System Audio Mode Request', 23, 'No attempts on busy, so no count.'],
+      ['18438', '04:12:09.810', 'rejected', 's-rej', 's-bad', 'fl-bad', 4, 'Apple TV', '8', 'rejected: data_not_hex', 24, 'Reason moves into decoded. On the panel, error is always filled.'],
+      ['', '', 'no outcome', 's-n', 's-n', 'fl-n', 4, 'Apple TV', '8F', 'Give Device Power Status', 25, 'Page rule: no matching tx within 6 s, past the 5 s result window. Usually a dropped stream.']
+    ].map((x) => ({ seq:x[0], t:x[1], st:x[2], sc:x[3], ec:x[4], fl:x[5], tn:x[6], tm:x[7], hex:x[8], dec:x[9], dc:x[2] === 'rejected' ? 'bad' : '', n:x[10], note:x[11] }));
+    return {
+      life,
+      presets:[['—','Poll'],['8F','Power status'],['46','OSD name'],['83','Physical addr'],['8C','Vendor ID'],['9F','CEC version'],['04','Image View On'],['36','Standby']].map((p) => ({ code:p[0], label:p[1] })),
+      forms:[
+        { i:1, cap:'Idle, 8F preset picked', to:'4 Apple TV', re:'default, 1', data:'8F', dec:'Give Device Power Status', btn:'Send', busy:false, hasRes:false, sc:'', st:'', id:'', seq:'' },
+        { i:2, cap:'In flight', to:'8 Playback 2', re:'default, 1', data:'8F', dec:'Give Device Power Status', btn:'Sending…', busy:true, hasRes:true, sc:'s-send', st:'sending', id:'w-18', seq:'' },
+        { i:3, cap:'Outcome back, form ready again', to:'8 Playback 2', re:'default, 1', data:'8F', dec:'Give Device Power Status', btn:'Send', busy:false, hasRes:true, sc:'s-bad', st:'nack ×2', id:'w-18', seq:'seq 18432' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

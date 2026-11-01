@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Counters, log, OTA</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+p{margin:0}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.col{display:flex;flex-direction:column;gap:8px;min-width:0}
+.tabs{display:flex;padding:0 4px;background:var(--surface-variant);border:1px solid var(--outline);border-bottom:0;border-radius:10px 10px 0 0}
+.tab{flex:1;height:44px;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;font-size:13px}
+.tab[aria-pressed="true"]{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+.rail{display:flex;flex-direction:column;gap:12px;padding:12px;background:var(--surface-variant);border:1px solid var(--outline);border-top-color:var(--surface-variant);border-radius:0 0 10px 10px}
+.hint{font:12px/16px var(--sans);color:var(--on-surface)}
+.well{background:var(--surface);border:1px solid var(--outline);border-radius:6px;overflow:hidden}
+.ct{display:grid;grid-template-columns:minmax(0,1fr) 88px 56px;column-gap:8px;padding:0 8px;font:13px/24px var(--mono);font-variant-numeric:tabular-nums}
+.ct>*{text-align:right}.ct>:first-child{text-align:left;overflow:hidden;text-overflow:ellipsis}
+.ct.top{background:var(--surface-variant);border-bottom:1px solid var(--outline);font:12px/24px var(--sans)}
+.ct.grp{padding-top:4px;font:600 12px/20px var(--sans)}
+.pos{color:var(--on-surface)}.neg{color:var(--error)}.zero{color:var(--on-surface-variant)}
+.lg{padding:4px 8px;border-bottom:1px solid var(--surface-variant);font:13px/20px var(--mono)}
+.lg:last-child{border-bottom:0}
+.lgt{display:flex;gap:8px;color:var(--on-surface-variant)}
+.lv-info{color:var(--on-surface-variant)}.lv-warn{color:var(--primary)}.lv-error{color:var(--error)}
+.msg{word-break:break-word}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;font:13px/20px var(--mono)}
+.flow i{font-style:normal;color:var(--on-surface-variant)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.card{display:flex;flex-direction:column;gap:8px;min-height:176px;padding:12px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:10px}
+.chip{display:inline-flex;align-items:center;align-self:flex-start;gap:4px;height:20px;padding:0 6px;border:1px solid transparent;border-radius:6px;font:12px/18px var(--mono);white-space:nowrap}
+.c-ter{background:var(--tertiary);color:var(--on-primary)}
+.c-idle{border-color:var(--outline);color:var(--on-surface)}
+.c-ok{padding:0;color:var(--hover)}
+.c-bad{background:var(--error);color:var(--on-error)}
+.file{font:13px/20px var(--mono);word-break:break-all}
+.bar{height:8px;background:var(--surface);border:1px solid var(--outline);border-radius:4px;overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--tertiary)}
+.row{display:flex;justify-content:space-between;gap:8px;font:13px/20px var(--mono)}
+.grow{flex:1 1 auto}
+.btn{align-self:flex-start;height:28px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.btn:disabled{background:var(--outline);border-color:var(--outline);color:var(--on-surface);font-weight:400}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1416px; min-height: 1060px; padding: 32px; display: grid; grid-template-columns: 320px 320px 664px; gap: 24px; align-items: start; background: var(--surface)">
+
+  <div class="col">
+    <span class="cap">Counters, Δ against the previous sample</span>
+    <div>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="true">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+      <div class="rail">
+        <p class="hint">Sample every 60 s. Last sample 14 s ago.</p>
+        <div class="well">
+          <div class="ct top"><span>counter</span><span>value</span><span>Δ</span></div>
+          <sc-for list="{{counters}}" as="c" hint-placeholder-count="30">
+            <div class="ct {{c.gc}}"><span>{{c.k}}</span><span>{{c.v}}</span><span class="{{c.dc}}">{{c.d}}</span></div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <span class="cap">Log, level is the only colour</span>
+    <div>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="true">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+      <div class="rail">
+        <p class="hint">Last 64 lines, newest first. Refreshes while this tab is open.</p>
+        <div class="well">
+          <sc-for list="{{logs}}" as="l" hint-placeholder-count="10">
+            <div class="lg"><div class="lgt"><span>{{l.t}}</span><span class="lv-{{l.lv}}">{{l.lv}}</span></div><div class="msg">{{l.msg}}</div></div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <span class="cap">OTA states</span>
+    <div class="flow"><span>idle</span><i>→</i><span>hashing</span><i>→</i><span>uploading pct</span><i>→</i><span>verifying</span><i>→</i><span>rebooting</span><i>→</i><span>confirmed</span><i>|</i><span>rolled_back</span><i>|</i><span>failed: reason</span></div>
+    <div class="grid">
+      <sc-for list="{{ota}}" as="o" hint-placeholder-count="8">
+        <div class="card">
+          <span class="chip {{o.cc}}">{{o.st}}</span>
+          <sc-if value="{{o.hasFile}}" hint-placeholder-val="{{ true }}"><span class="file">{{o.file}}</span></sc-if>
+          <sc-if value="{{o.hasBar}}" hint-placeholder-val="{{ false }}"><div class="bar"><span style="width: {{o.pct}}%"></span></div></sc-if>
+          <sc-if value="{{o.hasRow}}" hint-placeholder-val="{{ false }}"><div class="row"><span>{{o.l}}</span><span>{{o.r}}</span></div></sc-if>
+          <p class="hint">{{o.hint}}</p>
+          <span class="grow"></span>
+          <sc-if value="{{o.hasBtn}}" hint-placeholder-val="{{ false }}"><button class="btn {{o.bc}}" type="button" disabled="{{o.off}}">{{o.btn}}</button></sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1416,"height":1060}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const file = 'aether-e91f2c04.bin, 1 482 304 B';
+    const ota = (x) => Object.assign({ cc:'c-ter', hasFile:true, file, hasBar:false, pct:0, hasRow:false, l:'', r:'', hasBtn:false, bc:'', off:false, btn:'', hint:'' }, x);
+    return {
+      counters:[['rx'],['frames','18 204','+212'],['errors','27','+3'],['acked_by_us','4 118','+64'],['tx'],['host','765','+2'],['local','1 120','+61'],['ack','1 841','+60'],['nack','37','+3'],['arb_lost','3','0'],['line_error','0','0'],['busy','0','0'],['rejected','1','0'],['retransmits','12','+1'],['origin_missing','0','0'],['sample_late','2','+1'],['launch_rejected','0','0'],['echo_error','0','0'],['edge_overrun','0','0'],['driven_low_mismatch','0','0'],['queue'],['depth','0','0'],['max','4','0'],['link'],['rssi','−58','+1'],['link_count','1','0'],['outbox_dropped','0','0'],['heap'],['heap_free','142 308','−812'],['heap_min','96 412','0'],['heap_largest','64 512','0']].map((c) => {
+        const bad = ['errors','nack','arb_lost','line_error','busy','rejected','sample_late','outbox_dropped'].includes(c[0]);
+        return c.length === 1 ? { k:c[0], v:'', d:'', gc:'grp', dc:'' } : { k:c[0], v:c[1], d:c[2] === '0' ? '·' : c[2], gc:'', dc:c[2] === '0' ? 'zero' : bad ? 'neg' : 'pos' };
+      }),
+      logs:[
+        ['04:11:58.102','warn','tx_attempt_failed sample_late'],
+        ['04:09:12.660','error','tx_attempt_failed line_error'],
+        ['04:02:14.771','info','stack_hwm task=cec-bus hwm=6724'],
+        ['03:40:02.015','warn','tx_attempt_failed sample_late'],
+        ['00:00:04.318','info','mqtt_connected'],
+        ['00:00:03.902','info','wifi_connected ip=192.0.2.66'],
+        ['00:00:00.214','warn','prev_boot_stage loop t_ms=310513']
+      ].map((l) => ({ t:l[0], lv:l[1], msg:l[2] })),
+      ota:[
+        ota({ st:'idle', cc:'c-idle', hasFile:false, hasRow:true, l:'running', r:'0.0.0+0faa1746', hint:'Choose an app image to enable Upload.', hasBtn:true, bc:'pri', off:true, btn:'Hash and upload' }),
+        ota({ st:'hashing', hint:'SHA-256 runs in this browser before anything is sent.' }),
+        ota({ st:'uploading 37%', hasBar:true, pct:37, hasRow:true, l:'548 KB', r:'1 482 KB', hint:'Bus passive. Frames to this bridge are NACKed for about 15 s.' }),
+        ota({ st:'verifying', hasBar:true, pct:100, hint:'The device checks SHA-256 before activating the slot.' }),
+        ota({ st:'rebooting', hasBar:true, pct:100, hint:'The stream drops here. The page reconnects and waits for the verdict.' }),
+        ota({ st:'confirmed', cc:'c-ok', hasFile:false, hasRow:true, l:'running', r:'0.0.0+e91f2c04', hint:'Boot 129. The new image reached MQTT and marked itself valid.', hasBtn:true, btn:'Done' }),
+        ota({ st:'rolled_back', cc:'c-bad', hasFile:false, hasRow:true, l:'running', r:'0.0.0+0faa1746', hint:'The new image did not confirm within 60 s. Back on the old one.', hasBtn:true, btn:'Done' }),
+        ota({ st:'failed: sha256_mismatch', cc:'c-bad', hint:'Nothing was activated. Normal CEC operation has resumed.', hasBtn:true, btn:'Try again' })
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

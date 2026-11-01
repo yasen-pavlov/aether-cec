@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Engineering delta</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+h2{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+.sec{display:flex;flex-direction:column;gap:8px}
+.tb{border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.r{display:grid;grid-template-columns:300px minmax(0,1fr);column-gap:16px;padding:6px 12px;border-top:1px solid var(--surface-variant);font:13px/20px var(--sans)}
+.r:first-child{border-top:0;background:var(--surface-variant);font:12px/20px var(--sans)}
+.r>b{font-weight:600}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1280px; min-height: 1240px; padding: 32px; display: flex; flex-direction: column; gap: 24px; background: var(--surface)">
+
+  <section class="sec">
+    <h2>Needs firmware or brief work</h2>
+    <div class="tb">
+      <div class="r"><span>Need</span><span>Gap and assumption</span></div>
+      <sc-for list="{{need}}" as="x" hint-placeholder-count="4"><div class="r"><b>{{x.a}}</b><span>{{x.b}}</span></div></sc-for>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Brief and protocol disagree; the design follows the column on the right</h2>
+    <div class="tb">
+      <div class="r"><span>Item</span><span>What the design does</span></div>
+      <sc-for list="{{mismatch}}" as="x" hint-placeholder-count="5"><div class="r"><b>{{x.a}}</b><span>{{x.b}}</span></div></sc-for>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Assumed on the page side; no firmware change</h2>
+    <div class="tb">
+      <div class="r"><span>Behaviour</span><span>How the page gets it</span></div>
+      <sc-for list="{{page}}" as="x" hint-placeholder-count="9"><div class="r"><b>{{x.a}}</b><span>{{x.b}}</span></div></sc-for>
+    </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const pair = (x) => ({ a:x[0], b:x[1] });
+    return {
+      need:[
+        ['OTA verdict after reboot','confirmed and rolled_back arrive as stream events from the new boot, and the stream does not replay. A page that reconnects late misses them, and status has no OTA field. Assumed: GET /api/status or a new GET /api/ota returns the last ota event with its id. Without it the page can only compare fw and boot, which cannot tell a pending image from a confirmed one.'],
+        ['Field-level config errors','PUT /api/cfg returns one free-text reason, such as replies: opcode 85 not allowed. Assumed: every reason starts with the field name and a colon, so the page can pin it to the field. Otherwise it falls back to one message above Save.'],
+        ['30 KB budget','Board 1 is 36 KB unminified. That includes sample data but has no real stream, PUT or OTA code, and the SHA-256 fallback adds 1.6 KB. With no build step, 30 KB raw looks unreachable at this feature set. Assumed: the budget means compressed size, or the firmware build serves a gzipped copy. See the open questions.'],
+        ['History on page load','The monitor starts empty on every load. A short ring, for example GET /api/bus?since=seq, would fill it and close reconnect gaps. Not required; the design works without it.']
+      ].map(pair),
+      mismatch:[
+        ['Opcodes 41 and 44','The brief lists 41 25 as User Control Pressed and 44 as Play. In CEC, 41 is Play and 44 is User Control Pressed. Sample rows leave both out; the decode table should follow the spec.'],
+        ['OTA state name','The protocol sends receiving; the brief says uploading. The page shows uploading.'],
+        ['err kinds and fields','The protocol also has line_low and extra timing fields. line_low renders like any err row, and the extras appear when a row is opened.'],
+        ['pa value','The protocol also accepts edid. The field allows it, as drawn in the validation message.'],
+        ['Connection limit','The brief says three SSE connections. The protocol says at most 4 connections, SSE included. The page holds one stream plus short requests.'],
+        ['Power state command','cmd/state is in the protocol but not the brief. No UI for it.']
+      ].map(pair),
+      page:[
+        ['Stream with a token','EventSource cannot send Authorization. The page reads /api/events through fetch, as today.'],
+        ['SHA-256','Plain HTTP has no crypto.subtle in current browsers, so the JavaScript fallback from today’s page stays.'],
+        ['Upload progress','hashing is browser-only. uploading comes from XHR progress, since fetch reports none and other requests can wait behind an upload.'],
+        ['Send correlation','The page assigns ids like w-18. A pending row with no tx after 6 s shows no outcome.'],
+        ['Node name','From GET /api/cfg, for the header and the reset confirmation. Before a token exists the header shows aether as a label.'],
+        ['Counter Δ','Difference between telemetry samples. The baseline resets when boot changes.'],
+        ['OSD names','Learned from 47 frames and kept in this browser. The page never sends 46 on its own, so it adds no bus traffic.'],
+        ['Gap and boot markers','From a jump in seq and a change in boot.'],
+        ['Live uptime','Extrapolated locally from the last t_us.'],
+        ['Log','GET /api/log every 5 s, only while the Log tab is open.'],
+        ['Cheap DOM','At most 500 rows, appended in one batch per animation frame, with one delegated click handler. Filters toggle classes rather than re-rendering. column-reverse keeps the view on newest without scroll code.'],
+        ['No copy buttons','navigator.clipboard is also missing on plain HTTP. Text stays selectable.']
+      ].map(pair)
+    };
+  }
+}
+</script>
+</body>
+</html>

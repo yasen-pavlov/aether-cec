@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Visual system</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+h2{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+.sec{display:flex;flex-direction:column;gap:8px;min-width:0}
+.tb{border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.tk{display:grid;grid-template-columns:48px 176px 72px minmax(0,1fr) 96px 112px;column-gap:12px;align-items:center;min-height:28px;padding:0 12px;font:13px/20px var(--mono);border-top:1px solid var(--surface-variant)}
+.tk.top{background:var(--surface-variant);border-top:0;font:12px/28px var(--sans)}
+.sw{width:32px;height:16px;border:1px solid var(--outline);border-radius:4px}
+.use{font:13px/20px var(--sans)}
+.fail{display:inline-block;padding:0 5px;border-radius:6px;background:var(--error);color:var(--on-error);font:12px/18px var(--mono)}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.rule{font:13px/20px var(--sans)}
+.ts{display:grid;grid-template-columns:minmax(0,1fr) 136px;column-gap:12px;align-items:baseline;padding:4px 12px;border-top:1px solid var(--surface-variant)}
+.ts:first-child{border-top:0}
+.ts>span:last-child{font:12px/16px var(--mono);color:var(--on-surface-variant)}
+.sp{display:flex;align-items:flex-end;gap:16px;padding:12px}
+.sp>div{display:flex;flex-direction:column;align-items:flex-start;gap:4px;font:12px/16px var(--mono)}
+.sp i{display:block;height:12px;background:var(--on-surface)}
+.mt{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;padding:0 12px;font:13px/24px var(--sans);border-top:1px solid var(--surface-variant)}
+.mt>span:last-child{font:13px/24px var(--mono)}
+.ch{display:grid;grid-template-columns:172px minmax(0,1fr);column-gap:12px;align-items:center;min-height:32px;padding:4px 12px;border-top:1px solid var(--surface-variant);font:13px/20px var(--sans)}
+.ch:first-child{border-top:0}
+.chs{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:12px/16px var(--mono);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hover)}
+.s-soft{padding:0;border:0;color:var(--error)}
+.s-bad{background:var(--error);border-color:var(--error);color:var(--on-error)}
+.s-n{border-color:var(--outline);color:var(--on-surface)}
+.s-rej{border-color:var(--error);color:var(--error)}
+.s-send{border-color:var(--primary);color:var(--primary)}
+.s-send::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--primary)}
+.s-ter{background:var(--tertiary);color:var(--on-primary)}
+.t-rx{color:var(--secondary)}.t-tx{color:var(--on-surface);font-weight:600}.t-loc{color:var(--tertiary)}
+.tx{font:13px/20px var(--mono)}
+.demo{display:grid;grid-template-columns:44px 96px 32px minmax(0,1fr);column-gap:8px;height:24px;padding:0 12px;font:13px/24px var(--mono);white-space:nowrap}
+.dim{color:var(--on-surface-variant)}
+.ln{display:grid;grid-template-columns:136px minmax(0,1fr);column-gap:12px;padding:4px 12px;border-top:1px solid var(--surface-variant);font:13px/20px var(--sans)}
+.ln>b{font:13px/20px var(--mono);font-weight:400}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1280px; min-height: 1320px; padding: 32px; display: flex; flex-direction: column; gap: 24px; background: var(--surface)">
+
+  <section class="sec">
+    <h2>Colour tokens, as given in the brief; contrast measured</h2>
+    <div class="tb">
+      <div class="tk top"><span></span><span>token</span><span>value</span><span>use</span><span>on surface</span><span>on surface-variant</span></div>
+      <sc-for list="{{tokens}}" as="t" hint-placeholder-count="11">
+        <div class="tk">
+          <span class="sw" style="background: {{t.v}}"></span><span>{{t.n}}</span><span>{{t.v}}</span><span class="use">{{t.u}}</span>
+          <span>{{t.a}}</span>
+          <span><sc-if value="{{t.fails}}" hint-placeholder-val="{{ false }}"><span class="fail">{{t.b}}</span></sc-if><sc-if value="{{t.passes}}" hint-placeholder-val="{{ true }}">{{t.b}}</sc-if></span>
+        </div>
+      </sc-for>
+    </div>
+    <p class="rule">Two tokens fail 4.5:1 on surface-variant, so three rules follow. Data sits on surface, controls on surface-variant: lists inside a panel go in a surface well. Secondary text on a panel uses on-surface. Error on a panel is always filled. Rows mark hover with an outline, never a fill, because any fill drops on-surface-variant below 4.5:1. Primary never sits on outline (4.31:1).</p>
+  </section>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+    <section class="sec">
+      <h2>Type scale</h2>
+      <div class="tb">
+        <div class="ts"><span style="font: 14px/20px var(--sans)">Body and buttons</span><span>sans 14/20</span></div>
+        <div class="ts"><span style="font: 600 13px/20px var(--sans)">Headings stay this small</span><span>sans 600 13/20</span></div>
+        <div class="ts"><span style="font: 12px/16px var(--sans)">Labels, hints, column heads</span><span>sans 12/16</span></div>
+        <div class="ts"><span style="font: 13px/24px var(--mono)">04:12:07.418 84 20 00 00 04</span><span>mono 13/24 rows</span></div>
+        <div class="ts"><span style="font: 13px/20px var(--mono)">0.0.0+0faa1746</span><span>mono 13/20 fields</span></div>
+        <div class="ts"><span style="font: 12px/16px var(--mono)">nack ×2</span><span>mono 12/16 chips</span></div>
+        <div class="ts"><span style="font: 600 14px/20px var(--mono)">aether</span><span>mono 600 14/20</span></div>
+      </div>
+      <p class="cap">Mono stack: ui-monospace, "JetBrains Mono", monospace. Sans stack: system-ui, sans-serif. No web font.</p>
+    </section>
+    <section class="sec">
+      <h2>Spacing and metrics</h2>
+      <div class="tb">
+        <div class="sp"><div><i style="width: 4px"></i>4</div><div><i style="width: 8px"></i>8</div><div><i style="width: 12px"></i>12</div><div><i style="width: 16px"></i>16</div><div><i style="width: 24px"></i>24</div></div>
+        <div class="mt"><span>Panel radius</span><span>10</span></div>
+        <div class="mt"><span>Chip and input radius</span><span>6</span></div>
+        <div class="mt"><span>Monitor row, desktop</span><span>24</span></div>
+        <div class="mt"><span>Monitor row, phone</span><span>48</span></div>
+        <div class="mt"><span>Control height: toolbar, form, phone</span><span>28, 32, 44</span></div>
+        <div class="mt"><span>Header strip, desktop rail</span><span>44, 320</span></div>
+        <div class="mt"><span>Phone layout below</span><span>720</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+    <section class="sec">
+      <h2>Status chips: weight follows urgency</h2>
+      <div class="tb">
+        <div class="ch"><div class="chs"><span class="chip s-ack">ack</span><span class="chip s-ack">ack ×2</span></div><span>Plain text. Healthy traffic stays quiet.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-soft">nack</span></div><span>Polls only. Evidence, not a fault.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-n">arb_lost ×3</span><span class="chip s-n">busy</span></div><span>Outline. Worth noticing, not a fault. Also no outcome.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-rej">rejected</span></div><span>Error outline. Never reached the bus. Surface only.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-bad">nack ×2</span><span class="chip s-bad">line_error ×5</span></div><span>Filled. Something needs attention. Also err, line, stuck_low.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-send">sending</span></div><span>Primary outline. Waiting on the device.</span></div>
+        <div class="ch"><div class="chs"><span class="chip s-ter">uploading 37%</span></div><span>Filled tertiary. OTA only.</span></div>
+        <div class="ch"><div class="chs"><span class="tx dim">info</span><span class="tx" style="color: var(--primary)">warn</span><span class="tx" style="color: var(--error)">error</span></div><span>Log level, text only. Warn borrows primary.</span></div>
+      </div>
+    </section>
+    <section class="sec">
+      <h2>Opcode and name colouring</h2>
+      <div class="tb">
+        <div class="demo" style="margin-top: 4px"><span class="dim">18392</span><span class="dim">04:11:58.402</span><span class="t-loc">loc</span><span>0 TV → 4 Apple TV  90 <span class="dim">00</span>  <span class="t-loc">↩ 18391</span> Report Power Status: On</span></div>
+        <div class="ln" style="margin-top: 4px"><b class="dim">seq, uptime</b><span>on-surface-variant, always.</span></div>
+        <div class="ln"><b><span class="t-rx">rx</span> <span class="t-tx">tx</span> <span class="t-loc">loc</span></b><span>Kind carries direction: secondary, on-surface 600, tertiary. err and line are filled.</span></div>
+        <div class="ln"><b>4 Apple TV</b><span>Number always, then OSD name if learned, else the CEC name.</span></div>
+        <div class="ln"><b>15</b><span>Reads all as a target, Unregistered as an initiator.</span></div>
+        <div class="ln"><b>90 <span class="dim">00</span></b><span>Opcode byte on-surface, operands on-surface-variant.</span></div>
+        <div class="ln"><b>Standby</b><span>Decoded text on-surface. An unknown opcode reads Unknown 6A.</span></div>
+        <div class="ln"><b class="dim">— poll</b><span>Route, hex and decoded dim. Status keeps its colour.</span></div>
+        <div class="ln"><b class="t-loc">↩ 18391</b><span>Tertiary link to reply_to.seq.</span></div>
+        <div class="ln"><b>no per-opcode hue</b><span>Colour marks state, not opcode. At 10 rows/s a hue per opcode reads as noise.</span></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="sec">
+    <h2>Motion</h2>
+    <p class="rule">Three moves only. Live dot pulses every 2 s. In-flight dot pulses every 1 s. The outcome outline on a sent row fades over 1 s. All stop under prefers-reduced-motion.</p>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1320}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const tokens = [
+      ['surface','#212121','Page, and every data list','—','—'],
+      ['surface-variant','#323232','Panels, table header, inputs','—','—'],
+      ['outline','#474747','Borders, dividers, pressed filters','—','—'],
+      ['on-surface','#b0bec5','Body text','8.45','6.73'],
+      ['on-surface-variant','#8c8b8b','Secondary text, timestamps','4.74','3.77'],
+      ['primary','#ff9800','Focus, primary button, live dot','7.47','5.95'],
+      ['secondary','#82aaff','Links, rx','7.01','5.58'],
+      ['tertiary','#c792ea','Local replies, OTA','6.69','5.33'],
+      ['hover','#80cbc4','Hover, selection, ack','8.63','6.87'],
+      ['error','#ff5370','Errors, nack, stuck_low, crash','5.16','4.10'],
+      ['on-primary, on-error','#212121','Text on filled chips','7.47, 5.16 on fill','—']
+    ];
+    const failing = ['on-surface-variant','error'];
+    return { tokens:tokens.map((t) => ({ n:t[0], v:t[1], u:t[2], a:t[3], b:t[4], fails:failing.includes(t[0]), passes:!failing.includes(t[0]) })) };
+  }
+}
+</script>
+</body>
+</html>

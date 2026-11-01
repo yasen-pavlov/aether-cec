@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Configuration</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+h3{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.tabs{display:flex;padding:0 4px;background:var(--surface-variant);border:1px solid var(--outline);border-bottom:0;border-radius:10px 10px 0 0}
+.tab{flex:1;height:44px;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;font-size:13px}
+.tab[aria-pressed="true"]{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+.rail{position:relative;padding:12px;background:var(--surface-variant);border:1px solid var(--outline);border-top-color:var(--surface-variant);border-radius:0 0 10px 10px;overflow:hidden}
+.stack{display:flex;flex-direction:column;gap:12px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld>label,.fld>span{display:flex;align-items:center;gap:6px;font:12px/16px var(--sans)}
+.inp{width:100%;height:32px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.inp.bad{border:2px solid var(--error)}
+.inp::placeholder{color:var(--on-surface);opacity:1}
+.fld>.warn{align-self:flex-start;padding:2px 6px;border-radius:6px;background:var(--error);color:var(--on-error)}
+.mk{width:6px;height:6px;border-radius:50%;background:var(--primary)}
+.hint{font:12px/16px var(--sans);color:var(--on-surface)}
+.mode{display:flex;gap:4px}
+.mode button{flex:1;height:28px;background:transparent;border:1px solid var(--outline);border-radius:6px;font-size:12px}
+.mode button[aria-pressed="true"]{background:var(--outline)}
+.tset{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tset.six{grid-template-columns:repeat(2,minmax(0,1fr))}
+.tv{height:28px;background:transparent;border:1px solid var(--outline);border-radius:6px;font:12px/16px var(--mono)}
+.tv[aria-pressed="true"]{background:var(--on-surface);border-color:var(--on-surface);color:var(--surface)}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px}
+.ro{display:flex;justify-content:space-between;font:12px/20px var(--sans)}
+.ro b{font:13px/20px var(--mono)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px;white-space:nowrap}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.btn.dng{background:var(--error);border-color:var(--error);color:var(--on-error);font-weight:600}
+.btn:disabled{background:var(--outline);border-color:var(--outline);color:var(--on-surface);font-weight:400}
+.foot{display:flex;align-items:center;gap:8px;margin:0 -12px -12px;padding:8px 12px;border-top:1px solid var(--outline)}
+.grow{flex:1 1 auto}
+.un{font:13px/20px var(--mono);color:var(--primary)}
+.sep{height:1px;margin:0;background:var(--outline);border:0}
+.code{display:block;width:100%;height:596px;padding:8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono);resize:none}
+.pong{font:13px/20px var(--mono);color:var(--hover)}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1416px; min-height: 920px; padding: 32px; display: grid; grid-template-columns: repeat(4, 320px); gap: 24px; align-items: start; background: var(--surface)">
+
+  <sc-for list="{{forms}}" as="f" hint-placeholder-count="2">
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <span class="cap">{{f.cap}}</span>
+      <div>
+        <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="true">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+        <form class="rail stack">
+          <div class="mode" role="group" aria-label="Edit mode"><button type="button" aria-pressed="true">Form</button><button type="button" aria-pressed="false">Raw JSON</button></div>
+          <div class="two">
+            <sc-for list="{{f.top}}" as="x" hint-placeholder-count="6">
+              <div class="fld">
+                <label for="{{f.i}}{{x.id}}"><sc-if value="{{x.ch}}" hint-placeholder-val="{{ false }}"><span class="mk"></span></sc-if>{{x.label}}</label>
+                <sc-if value="{{x.sel}}" hint-placeholder-val="{{ false }}"><select id="{{f.i}}{{x.id}}" class="inp"><option>{{x.v}}</option></select></sc-if>
+                <sc-if value="{{x.txt}}" hint-placeholder-val="{{ true }}"><input id="{{f.i}}{{x.id}}" class="inp {{x.bc}}" value="{{x.v}}" placeholder="{{x.ph}}" spellcheck="false" aria-invalid="{{x.bad}}"></sc-if>
+                <sc-if value="{{x.bad}}" hint-placeholder-val="{{ false }}"><span class="warn">{{x.msg}}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div class="fld"><span>Local replies</span>
+            <div class="tset six"><sc-for list="{{f.replies}}" as="r" hint-placeholder-count="6"><button class="tv" type="button" aria-pressed="{{r.on}}">{{r.label}}</button></sc-for></div>
+          </div>
+          <div class="fld"><span>Acknowledge for</span>
+            <div class="tset"><sc-for list="{{f.acks}}" as="r" hint-placeholder-count="15"><button class="tv" type="button" aria-pressed="{{r.on}}">{{r.label}}</button></sc-for></div>
+          </div>
+          <div class="two">
+            <sc-for list="{{f.low}}" as="x" hint-placeholder-count="4">
+              <div class="fld">
+                <label for="{{f.i}}{{x.id}}"><sc-if value="{{x.ch}}" hint-placeholder-val="{{ false }}"><span class="mk"></span></sc-if>{{x.label}}</label>
+                <sc-if value="{{x.sel}}" hint-placeholder-val="{{ false }}"><select id="{{f.i}}{{x.id}}" class="inp"><option>{{x.v}}</option></select></sc-if>
+                <sc-if value="{{x.txt}}" hint-placeholder-val="{{ true }}"><input id="{{f.i}}{{x.id}}" class="inp" value="{{x.v}}" placeholder="{{x.ph}}" spellcheck="false"></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <label class="chk"><input type="checkbox">allow_from, bench only</label>
+          <sc-if value="{{f.dirty}}" hint-placeholder-val="{{ false }}">
+            <span class="hint">GPIO changes take effect after a restart.</span>
+            <div class="foot"><span class="un">3 unsaved</span><span class="grow"></span><button class="btn" type="button">Discard</button><button class="btn pri" type="button" disabled="{{ true }}">Save</button></div>
+          </sc-if>
+        </form>
+      </div>
+    </div>
+  </sc-for>
+
+  <div style="display: flex; flex-direction: column; gap: 8px">
+    <span class="cap">Raw JSON, same PUT body; node left out</span>
+    <div>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="true">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+      <form class="rail stack">
+        <div class="mode" role="group" aria-label="Edit mode"><button type="button" aria-pressed="false">Form</button><button type="button" aria-pressed="true">Raw JSON</button></div>
+        <label class="hint" for="raw">Effective configuration</label>
+        <textarea id="raw" class="code" spellcheck="false" value="{{raw}}"></textarea>
+        <div class="foot"><span class="un">1 unsaved</span><span class="grow"></span><button class="btn" type="button">Discard</button><button class="btn pri" type="button">Save</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 8px">
+    <span class="cap">Below the form: commands, and the token on phone</span>
+    <div class="rail stack" style="border-radius: 10px; border-color: var(--outline)">
+      <h3>Commands</h3>
+      <div style="display: flex; align-items: center; gap: 8px"><button class="btn" type="button">Ping</button><span class="pong">ok, 12 ms</span></div>
+      <hr class="sep">
+      <div style="display: flex; align-items: center; gap: 8px"><button class="btn" type="button">Restart</button></div>
+      <span class="hint">The stream drops and the page reconnects on its own.</span>
+      <hr class="sep">
+      <button class="btn" type="button" style="align-self: flex-start">Reset to CEC defaults</button>
+      <div class="fld"><label for="cf">Type aether to confirm</label><input id="cf" class="inp" value="aether" spellcheck="false" autocomplete="off"></div>
+      <button class="btn dng" type="button">Reset and restart</button>
+      <span class="hint">Keeps node, Wi-Fi and MQTT credentials.</span>
+      <hr class="sep">
+      <h3>API token</h3>
+      <div class="fld"><label for="tk">Token, stored in this browser</label><input id="tk" class="inp" type="password" value="sample-token" autocomplete="off"></div>
+      <div style="display: flex; gap: 8px"><button class="btn" type="button">Save</button><button class="btn" type="button">Forget</button></div>
+      <span class="hint">On desktop this field sits in the header.</span>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1416,"height":920}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const f = (id, label, v, opt) => Object.assign({ id, label, v, sel:false, txt:true, ch:false, bad:false, bc:'', msg:'', ph:'' }, opt || {});
+    const select = { sel:true, txt:false };
+    const replies = ['83 Physical','8C Vendor','8F Power','9F Version','46 OSD name','91 Language'];
+    const form = (i, cap, top, low, offReply, ackOn, dirty) => ({
+      i, cap, top, low, dirty,
+      replies:replies.map((label) => ({ label, on:label !== offReply })),
+      acks:Array.from({ length:15 }, (_, n) => ({ label:String(n), on:ackOn.includes(n) }))
+    });
+    const low = [f('te','Telemetry, s','60'), f('lo','Log level','off',select), f('gc','GPIO cec','4'), f('gh','GPIO hpd','',{ ph:'none' })];
+    const clean = [f('la','Logical address','0',select), f('ty','Type','tv',select), f('pa','Physical address','0.0.0.0'), f('os','OSD name','Aether'), f('ve','Vendor','012345'), f('cv','CEC version','1.4',select)];
+    const edited = [f('la','Logical address','0',select), f('ty','Type','tv',select), f('pa','Physical address','2.0.0',{ ch:true, bad:true, bc:'bad', msg:'Use a.b.c.d or edid' }), f('os','OSD name','Living room',{ ch:true }), f('ve','Vendor','012345'), f('cv','CEC version','1.4',select)];
+    return {
+      forms:[
+        form('a','Clean, matches the device',clean,low,'',[0],false),
+        form('b','Unsaved, one inline error blocks Save',edited,low,'91 Language',[0],true)
+      ],
+      raw:'{\n  "la": 0,\n  "type": "tv",\n  "pa": "0.0.0.0",\n  "osd": "Aether",\n  "vendor": "012345",\n  "cec_version": "1.4",\n  "replies": ["83", "8C", "8F",\n              "9F", "46", "91"],\n  "ack": [0],\n  "telemetry_s": 120,\n  "allow_from": false,\n  "log": "off",\n  "gpio": { "cec": 4, "hpd": null }\n}'
+    };
+  }
+}
+</script>
+</body>
+</html>

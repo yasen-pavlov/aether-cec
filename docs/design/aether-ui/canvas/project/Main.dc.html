@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aether console</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--secondary)}a:hover{color:var(--hover)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+h1,h2,h3{margin:0;font:600 13px/20px var(--sans)}
+.m{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums}
+.dim{color:var(--on-surface-variant)}
+.lab{font:12px/16px var(--sans)}
+
+.app{display:grid;grid-template-columns:minmax(0,1fr) 320px;grid-template-rows:auto auto minmax(0,1fr);grid-template-areas:"head head" "mon tabs" "mon rail";column-gap:12px;height:100vh;min-height:560px;padding:0 12px 12px}
+
+.head{grid-area:head;display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;min-height:44px;margin:0 -12px 12px;padding:4px 12px;border-bottom:1px solid var(--outline)}
+.hk{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.hk>span:first-child{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.hk>span:last-child{font:13px/20px var(--mono);font-variant-numeric:tabular-nums}
+.brand{font:600 14px/20px var(--mono);color:var(--on-surface)}
+.live{display:flex;align-items:center;gap:6px;font:12px/16px var(--mono);color:var(--primary)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--primary);flex:none;animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
+.grow{flex:1 1 auto}
+.tok{display:flex;align-items:center;gap:8px}
+.tok input{width:112px;height:28px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--hover);color:var(--hover)}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.btn.pri:hover{color:var(--on-primary)}
+.btn:disabled{background:var(--outline);border-color:var(--outline);color:var(--on-surface);cursor:default;font-weight:400}
+
+.mon{grid-area:mon;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.bar{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px;background:var(--surface-variant);border-bottom:1px solid var(--outline)}
+.seg{display:flex;gap:4px}
+.tg{height:28px;padding:0 8px;background:transparent;border:1px solid var(--outline);border-radius:6px;cursor:pointer;font:12px/16px var(--mono)}
+.tg[aria-pressed="true"]{background:var(--outline)}
+.tg:hover{border-color:var(--hover)}
+.mini{display:flex;align-items:center;gap:6px;font:12px/16px var(--sans)}
+.mini select,.mini input{height:28px;padding:0 6px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.mini select{max-width:128px}.mini input{width:44px}
+
+.row{position:relative;display:grid;grid-template-columns:44px 96px 32px 234px 132px minmax(0,1fr) 108px;grid-template-areas:"q t k r h d s";column-gap:8px;align-items:center;height:24px;padding:0 8px;font:13px/24px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.row>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.row.hd{background:var(--surface-variant);border-bottom:1px solid var(--outline);font:12px/24px var(--sans)}
+.seq{grid-area:q;padding:0;background:none;border:0;color:var(--on-surface-variant);font:inherit;text-align:left;cursor:pointer}
+.seq::after{content:"";position:absolute;inset:0}
+.seq:focus-visible{outline:0}.seq:focus-visible::after{outline:2px solid var(--primary);outline-offset:-2px}
+.row:not(.hd):hover{box-shadow:inset 0 0 0 1px var(--hover)}
+.row.open{box-shadow:inset 0 0 0 1px var(--hover)}
+.t{grid-area:t;color:var(--on-surface-variant)}
+.k{grid-area:k}.k-rx{color:var(--secondary)}.k-tx{color:var(--on-surface);font-weight:600}.k-loc{color:var(--tertiary)}
+.k-err,.k-line{justify-self:start;padding:0 3px;height:18px;line-height:18px;font-size:12px;border-radius:4px;background:var(--error);color:var(--on-error)}
+.k-lineok{color:var(--hover)}
+.rt{grid-area:r;display:grid;grid-template-columns:2ch 13ch 1ch 2ch minmax(0,1fr);column-gap:1ch}
+.rt>*{overflow:hidden;text-overflow:ellipsis}.n{text-align:right}.ar{color:var(--on-surface-variant)}
+.hx{grid-area:h}.op{color:var(--on-surface)}.args{margin-left:1ch;color:var(--on-surface-variant)}
+.d{grid-area:d}.rep{position:relative;z-index:1;margin-right:1ch;color:var(--tertiary);text-decoration:none}
+.rep:hover{text-decoration:underline;color:var(--tertiary)}
+.s{grid-area:s;display:flex;align-items:center}
+.row.poll .rt,.row.poll .d{color:var(--on-surface-variant)}
+.d.bad{color:var(--error)}
+
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:12px/16px var(--mono);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hover)}
+.s-soft{padding:0;border:0;color:var(--error)}
+.s-bad{background:var(--error);border-color:var(--error);color:var(--on-error)}
+.s-n{border-color:var(--outline);color:var(--on-surface)}
+.s-rej{border-color:var(--error);color:var(--error)}
+.s-send{border-color:var(--primary);color:var(--primary)}
+.s-send::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--primary);animation:pulse 1s ease-in-out infinite}
+
+.det{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 16px;padding:8px 8px 12px 60px;border-bottom:1px solid var(--outline);font:13px/20px var(--mono)}
+.det .all{grid-column:1/-1;word-break:break-all}
+.det b{margin-right:6px;font:12px/20px var(--sans);color:var(--on-surface-variant)}
+
+.scroll{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column-reverse;overflow-anchor:none}
+.empty{margin:0;padding:24px;text-align:center;color:var(--on-surface-variant)}
+.pill{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);height:32px;box-shadow:0 0 0 4px var(--surface)}
+
+.tabs{grid-area:tabs;display:flex;padding:0 4px;background:var(--surface-variant);border:1px solid var(--outline);border-bottom:0;border-radius:10px 10px 0 0}
+.tab{flex:1;height:44px;padding:0 2px;background:none;border:0;border-bottom:2px solid transparent;cursor:pointer;font-size:13px}
+.tab:hover{color:var(--hover)}
+.tab[aria-pressed="true"]{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+.tab.pb{display:none}
+
+.rail{grid-area:rail;min-height:0;overflow:auto;padding:12px;background:var(--surface-variant);border:1px solid var(--outline);border-top-color:var(--surface-variant);border-radius:0 0 10px 10px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld>span,.fld>label{font:12px/16px var(--sans)}
+.inp{width:100%;height:32px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.inp::placeholder{color:var(--on-surface);opacity:1}
+.inp:hover{border-color:var(--hover)}
+.fld>.hint,.hint{font:12px/16px var(--sans);color:var(--on-surface)}
+.fld>.dec{min-height:20px;font:13px/20px var(--mono);color:var(--on-surface)}
+.fld>.warn{align-self:flex-start;max-width:100%;padding:2px 6px;border-radius:6px;background:var(--error);color:var(--on-error)}
+.pres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.pre{display:flex;gap:6px;align-items:center;height:28px;padding:0 6px;background:transparent;border:1px solid var(--outline);border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap;overflow:hidden}
+.pre:hover{border-color:var(--hover);color:var(--hover)}
+.pre .m{font-size:12px}
+.sep{height:1px;margin:0;background:var(--outline);border:0}
+.res{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-height:20px;font:13px/20px var(--mono)}
+
+.well{background:var(--surface);border:1px solid var(--outline);border-radius:6px;overflow:hidden}
+.ct{display:grid;grid-template-columns:minmax(0,1fr) 88px 56px;column-gap:8px;padding:0 8px;font:13px/24px var(--mono);font-variant-numeric:tabular-nums}
+.ct>*{text-align:right}.ct>:first-child{text-align:left;overflow:hidden;text-overflow:ellipsis}
+.ct.top{background:var(--surface-variant);border-bottom:1px solid var(--outline);font:12px/24px var(--sans)}
+.ct.grp{padding-top:4px;font:600 12px/20px var(--sans)}
+.pos{color:var(--on-surface)}.neg{color:var(--error)}.zero{color:var(--on-surface-variant)}
+
+.lg{padding:4px 8px;border-bottom:1px solid var(--surface-variant);font:13px/20px var(--mono)}
+.lg:last-child{border-bottom:0}
+.lg .top{display:flex;gap:8px;color:var(--on-surface-variant)}
+.lv-info{color:var(--on-surface-variant)}.lv-warn{color:var(--primary)}.lv-error{color:var(--error)}
+.lg .msg{word-break:break-word}
+
+.tset{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tset.six{grid-template-columns:repeat(2,minmax(0,1fr))}
+.tv{height:28px;background:transparent;border:1px solid var(--outline);border-radius:6px;cursor:pointer;font:12px/16px var(--mono)}
+.tv[aria-pressed="true"]{background:var(--on-surface);border-color:var(--on-surface);color:var(--surface)}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px}
+.foot{position:sticky;bottom:-12px;display:flex;align-items:center;gap:8px;margin:0 -12px -12px;padding:8px 12px;background:var(--surface-variant);border-top:1px solid var(--outline)}
+
+.app[data-d="b"] .row{grid-template-columns:96px 32px 234px minmax(0,1fr) 108px;grid-template-areas:"t k r d s" "q q q h s";height:44px;line-height:20px;align-content:center;border-bottom:1px solid var(--surface-variant)}
+.app[data-d="b"] .row.hd{display:none}
+
+@media (max-width:720px){
+.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"head" "main" "tabs";padding:0}
+.head{margin:0;gap:4px 12px;flex-wrap:nowrap;overflow:hidden}.wide{display:none}
+.mon,.rail{grid-area:main;border:0;border-radius:0}
+.app[data-tab="Bus"] .rail{display:none}.app:not([data-tab="Bus"]) .mon{display:none}
+.bar{order:3;overflow-x:auto;border-top:1px solid var(--outline);border-bottom:0}
+.tg,.btn,.mini select,.mini input,.inp,.pre,.tv{height:44px}
+.tg{min-width:44px}
+.row,.app[data-d="b"] .row{grid-template-columns:32px minmax(0,1fr) auto;grid-template-areas:"k r s" "h d t";height:48px;padding:0 12px;line-height:22px;border-bottom:1px solid var(--surface-variant)}
+.row.hd,.app[data-d="b"] .row.hd{display:none}
+.seq{grid-area:k;color:transparent}.args,.hh{display:none}
+.rt{grid-template-columns:auto auto auto auto minmax(0,1fr);justify-content:start}
+.pill{bottom:68px}
+.tabs{border:0;border-top:1px solid var(--outline);border-radius:0}
+.tab{height:52px;font-size:12px}.tab.pb{display:block}
+}
+@media (prefers-reduced-motion:reduce){.dot,.s-send::before{animation:none}}
+</style>
+</helmet>
+<div class="app" data-tab="{{tab}}" data-d="{{d}}">
+
+<header class="head">
+  <div class="live"><span class="dot"></span><span>live</span></div>
+  <span class="brand">{{node}}</span>
+  <div class="hk"><span>bus</span><span style="color: var(--hover)">ok</span></div>
+  <div class="hk"><span>LA</span><span>0 TV</span></div>
+  <div class="hk wide"><span>PA</span><span>0.0.0.0</span></div>
+  <div class="hk wide"><span>HPD</span><span>high</span></div>
+  <div class="hk"><span>RSSI</span><span>−58</span></div>
+  <div class="hk wide"><span>up</span><span>{{uptime}}</span></div>
+  <div class="hk wide"><span>boot</span><span>128 software</span></div>
+  <div class="hk wide"><span>fw</span><span>0.0.0+0faa1746</span></div>
+  <span class="grow wide"></span>
+  <div class="tok wide">
+    <label class="lab dim" for="tok">Token</label>
+    <input id="tok" type="password" value="sample-token" autocomplete="off">
+    <button class="btn" type="button">Forget</button>
+  </div>
+</header>
+
+<section class="mon" aria-label="Bus monitor">
+  <div class="bar">
+    <h1>Bus</h1>
+    <span class="m" style="font-size: 12px; white-space: nowrap">{{shown}} of {{total}}</span>
+    <div class="seg" role="group" aria-label="Show event kinds">
+      <sc-for list="{{toggles}}" as="f" hint-placeholder-count="6">
+        <button class="tg" type="button" aria-pressed="{{f.on}}" onClick="{{f.flip}}">{{f.label}}</button>
+      </sc-for>
+    </div>
+    <label class="mini">Device
+      <select value="{{device}}" onChange="{{onDevice}}">
+        <option value="">any</option>
+        <option value="0">0 TV</option>
+        <option value="4">4 Apple TV</option>
+        <option value="5">5 AVR-X3800H</option>
+        <option value="8">8 Playback 2</option>
+        <option value="11">11 PlayStation 5</option>
+      </select>
+    </label>
+    <label class="mini">Opcode
+      <input value="{{opf}}" onChange="{{onOpf}}" maxlength="2" spellcheck="false">
+    </label>
+    <span class="grow"></span>
+    <button class="btn" type="button" onClick="{{clear}}">Clear</button>
+    <button class="btn" type="button" onClick="{{togglePause}}" aria-pressed="{{paused}}">
+      <sc-if value="{{paused}}" hint-placeholder-val="{{ false }}">
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l7 4-7 4z" fill="currentColor"></path></svg>
+      </sc-if>
+      <sc-if value="{{running}}" hint-placeholder-val="{{ true }}">
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1h2v8H2zM6 1h2v8H6z" fill="currentColor"></path></svg>
+      </sc-if>
+      <span>{{pauseLabel}}</span>
+    </button>
+  </div>
+  <div class="row hd" aria-hidden="true">
+    <span style="grid-area: q">seq</span><span style="grid-area: t">uptime</span><span style="grid-area: k">kind</span><span style="grid-area: r">from → to</span><span style="grid-area: h">hex</span><span style="grid-area: d">decoded</span><span style="grid-area: s">status</span>
+  </div>
+  <div class="scroll" onScroll="{{onScroll}}">
+    <div>
+      <sc-if value="{{isEmpty}}" hint-placeholder-val="{{ false }}">
+        <p class="empty">Stream is live. Frames appear here as the bus carries them.</p>
+      </sc-if>
+      <sc-for list="{{rows}}" as="row" hint-placeholder-count="28">
+        <div class="row {{row.rc}}" id="s{{row.seq}}">
+          <button class="seq" type="button" onClick="{{row.toggle}}" aria-expanded="{{row.open}}" aria-label="Event {{row.seq}} details">{{row.seq}}</button>
+          <span class="t"><span class="hh">{{row.hh}}</span>{{row.ss}}</span>
+          <span class="k {{row.kc}}">{{row.k}}</span>
+          <span class="rt"><span class="n">{{row.fn}}</span><span>{{row.fm}}</span><span class="ar">{{row.ar}}</span><span class="n">{{row.tn}}</span><span>{{row.tm}}</span></span>
+          <span class="hx"><span class="op">{{row.op}}</span><span class="args">{{row.args}}</span></span>
+          <span class="d {{row.dc}}"><sc-if value="{{row.hasRep}}" hint-placeholder-val="{{ false }}"><a class="rep" href="#s{{row.rep}}">↩ {{row.rep}}</a></sc-if>{{row.dec}}</span>
+          <span class="s"><span class="chip {{row.sc}}">{{row.st}}</span></span>
+        </div>
+        <sc-if value="{{row.open}}" hint-placeholder-val="{{ false }}">
+          <div class="det">
+            <div class="all"><b>data</b>{{row.full}}</div>
+            <sc-for list="{{row.facts}}" as="x" hint-placeholder-count="3"><div><b>{{x.k}}</b>{{x.v}}</div></sc-for>
+          </div>
+        </sc-if>
+      </sc-for>
+    </div>
+  </div>
+  <sc-if value="{{paused}}" hint-placeholder-val="{{ false }}">
+    <button class="btn pri pill" type="button" onClick="{{togglePause}}">Resume · {{fresh}} new</button>
+  </sc-if>
+</section>
+
+<nav class="tabs" aria-label="Panels">
+  <button class="tab pb" type="button" aria-pressed="{{onBus}}" onClick="{{toBus}}">Bus</button>
+  <sc-for list="{{tabs}}" as="t" hint-placeholder-count="5">
+    <button class="tab" type="button" aria-pressed="{{t.on}}" onClick="{{t.pick}}">{{t.label}}</button>
+  </sc-for>
+</nav>
+
+<aside class="rail" aria-label="{{tab}} panel">
+
+  <sc-if value="{{tSend}}" hint-placeholder-val="{{ true }}">
+    <form class="stack" onSubmit="{{send}}">
+      <div class="two">
+        <div class="fld"><label for="sto">To</label>
+          <select id="sto" class="inp" value="{{to}}" onChange="{{onTo}}">
+            <option value="0">0 TV</option>
+            <option value="4">4 Apple TV</option>
+            <option value="5">5 AVR-X3800H</option>
+            <option value="8">8 Playback 2</option>
+            <option value="11">11 PlayStation 5</option>
+            <option value="15">15 Broadcast</option>
+          </select>
+        </div>
+        <div class="fld"><label for="sre">Retries</label>
+          <select id="sre" class="inp" value="{{retries}}" onChange="{{onRetries}}" disabled="{{isPoll}}">
+            <option value="">{{retryDefault}}</option>
+            <option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+          </select>
+        </div>
+      </div>
+      <div class="fld"><label for="sda">Data, hex</label>
+        <input id="sda" class="inp" value="{{data}}" onChange="{{onData}}" placeholder="empty = poll" spellcheck="false" autocomplete="off">
+        <sc-if value="{{dataBad}}" hint-placeholder-val="{{ false }}"><span class="warn">Not hex pairs. The device will answer data_not_hex.</span></sc-if>
+        <sc-if value="{{dataOk}}" hint-placeholder-val="{{ true }}"><span class="dec">{{decoded}}</span></sc-if>
+        <sc-if value="{{isPoll}}" hint-placeholder-val="{{ false }}"><span class="hint">Polls are sent once. A NACK here is evidence, not a failure.</span></sc-if>
+      </div>
+      <button class="btn pri" type="submit" style="height: 32px" disabled="{{inFlight}}">{{sendLabel}}</button>
+      <div class="res" aria-live="polite">
+        <sc-if value="{{hasLast}}" hint-placeholder-val="{{ false }}">
+          <span class="chip {{last.sc}}">{{last.st}}</span><span>{{last.id}}</span><a href="#s{{last.seq}}">seq {{last.seq}}</a>
+        </sc-if>
+      </div>
+      <hr class="sep">
+      <div class="fld"><span>Presets fill the form; nothing is sent until Send.</span>
+        <div class="pres">
+          <sc-for list="{{presets}}" as="p" hint-placeholder-count="8">
+            <button class="pre" type="button" onClick="{{p.pick}}"><span class="m">{{p.code}}</span>{{p.label}}</button>
+          </sc-for>
+        </div>
+      </div>
+    </form>
+  </sc-if>
+
+  <sc-if value="{{tCounters}}" hint-placeholder-val="{{ false }}">
+    <div class="stack">
+      <p class="hint" style="margin: 0">Sample every 60 s. Last sample 14 s ago.</p>
+      <div class="well">
+        <div class="ct top"><span>counter</span><span>value</span><span>Δ</span></div>
+        <sc-for list="{{counters}}" as="c" hint-placeholder-count="24">
+          <div class="ct {{c.gc}}"><span>{{c.k}}</span><span>{{c.v}}</span><span class="{{c.dc}}">{{c.d}}</span></div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{tLog}}" hint-placeholder-val="{{ false }}">
+    <div class="stack">
+      <p class="hint" style="margin: 0">Last 64 lines, newest first.</p>
+      <div class="well">
+        <sc-for list="{{logs}}" as="l" hint-placeholder-count="10">
+          <div class="lg"><div class="top"><span>{{l.t}}</span><span class="lv-{{l.lv}}">{{l.lv}}</span></div><div class="msg">{{l.msg}}</div></div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{tConfig}}" hint-placeholder-val="{{ false }}">
+    <form class="stack">
+      <div class="two">
+        <div class="fld"><label for="cla">Logical address</label><select id="cla" class="inp"><option>0</option><option>auto</option></select></div>
+        <div class="fld"><label for="cty">Type</label><select id="cty" class="inp"><option>tv</option><option>playback</option><option>audio</option><option>recorder</option><option>tuner</option></select></div>
+        <div class="fld"><label for="cpa">Physical address</label><input id="cpa" class="inp" value="0.0.0.0"></div>
+        <div class="fld"><label for="cos">OSD name</label><input id="cos" class="inp" value="Aether" maxlength="14"></div>
+        <div class="fld"><label for="cve">Vendor</label><input id="cve" class="inp" value="012345" maxlength="6"></div>
+        <div class="fld"><label for="ccv">CEC version</label><select id="ccv" class="inp"><option>1.4</option><option>1.3a</option><option>2.0</option></select></div>
+      </div>
+      <div class="fld"><span>Local replies</span><div class="tset six">
+        <sc-for list="{{replies}}" as="r" hint-placeholder-count="6"><button class="tv" type="button" aria-pressed="{{r.on}}" onClick="{{r.flip}}">{{r.label}}</button></sc-for>
+      </div></div>
+      <div class="fld"><span>Acknowledge for</span><div class="tset">
+        <sc-for list="{{acks}}" as="r" hint-placeholder-count="15"><button class="tv" type="button" aria-pressed="{{r.on}}" onClick="{{r.flip}}">{{r.label}}</button></sc-for>
+      </div></div>
+      <div class="two">
+        <div class="fld"><label for="cte">Telemetry, s</label><input id="cte" class="inp" value="60"></div>
+        <div class="fld"><label for="clo">Log level</label><select id="clo" class="inp"><option>off</option><option>error</option><option>warn</option><option>info</option><option>debug</option></select></div>
+        <div class="fld"><label for="cgc">GPIO cec</label><input id="cgc" class="inp" value="4"></div>
+        <div class="fld"><label for="cgh">GPIO hpd</label><input id="cgh" class="inp" value="" placeholder="none"></div>
+      </div>
+      <label class="chk"><input type="checkbox">allow_from, bench only</label>
+      <sc-if value="{{dirty}}" hint-placeholder-val="{{ false }}">
+        <div class="foot"><span class="m" style="color: var(--primary)">{{dirtyN}} unsaved</span><span class="grow"></span><button class="btn" type="button" onClick="{{discard}}">Discard</button><button class="btn pri" type="button" onClick="{{discard}}">Save</button></div>
+      </sc-if>
+    </form>
+  </sc-if>
+
+  <sc-if value="{{tOta}}" hint-placeholder-val="{{ false }}">
+    <form class="stack">
+      <div class="fld"><label for="ofi">App image</label><input id="ofi" type="file" class="m" style="font-size: 12px"></div>
+      <p class="hint" style="margin: 0">During upload the bus goes passive. Frames to this bridge are NACKed for about 15 s.</p>
+      <button class="btn pri" type="button" style="height: 32px" disabled="{{ true }}">Hash and upload</button>
+      <hr class="sep">
+      <div class="hk" style="justify-content: space-between"><span style="color: var(--on-surface)">State</span><span style="color: var(--tertiary)">idle</span></div>
+      <div class="hk" style="justify-content: space-between"><span style="color: var(--on-surface)">Running</span><span>0.0.0+0faa1746</span></div>
+    </form>
+  </sc-if>
+
+</aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"density":{"editor":"enum","options":["one-line","two-line"],"default":"one-line","section":"Monitor"},"live":{"editor":"boolean","default":true,"section":"Monitor"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  la = ['TV','Recording 1','Recording 2','Tuner 1','Playback 1','Audio System','Tuner 2','Tuner 3','Playback 2','Recording 3','Tuner 4','Playback 3','Reserved','Reserved','Specific','Unregistered'];
+  osd = {4:'Apple TV',5:'AVR-X3800H',11:'PlayStation 5'};
+  ops = {'04':'Image View On','0D':'Text View On','36':'Standby','46':'Give OSD Name','70':'System Audio Mode Request','72':'Set System Audio Mode','7D':'Give System Audio Mode Status','7E':'System Audio Mode Status','83':'Give Physical Address','85':'Request Active Source','89':'Vendor Command','8C':'Give Device Vendor ID','8E':'Menu Status','8F':'Give Device Power Status','91':'Get Menu Language','9D':'Inactive Source','9F':'Get CEC Version','A0':'Vendor Command With ID','FF':'Abort'};
+  clock = 15127418;
+  seq = 18391;
+  sent = 16;
+  cursor = 0;
+  script = [
+    ['rx',4,0,'83',1],['loc',0,15,'8400000000',1],['rx',4,0,'8F',1],['loc',0,4,'9000',1],
+    ['rx',5,15,'8410000005',1],['rx',11,5,'',1],['rx',11,8,'',0],['rx',4,15,'822000',1],
+    ['rx',5,0,'46',1],['loc',0,5,'47416574686572',1],['rx',0,4,'',1],['rx',4,0,'9F',1],
+    ['loc',0,4,'9E05',1],['rx',11,0,'8C',1],['loc',0,11,'87012345',1],['err','bit_timing',4,0,40],
+    ['rx',4,5,'702000',1],['rx',5,15,'7201',1]
+  ];
+  seed = [
+    ['rx',4,0,'',1],['rx',4,15,'8420000004',1],['rx',4,15,'8700E091',1],['rx',4,0,'8F',1],['loc',0,4,'9000',1],
+    ['rx',4,0,'46',1],['loc',0,4,'47416574686572',1],['rx',0,4,'46',1],['rx',4,0,'474170706C65205456',1],
+    ['rx',4,5,'',1],['rx',4,8,'',0],['rx',4,11,'',1],['rx',11,15,'8430000004',1],['rx',11,0,'9F',1],
+    ['loc',0,11,'9E05',1],['tx',0,8,'8F','nack',2,'w-15'],['rx',5,15,'8410000005',1],['rx',5,15,'87001451',1],
+    ['rx',4,15,'822000',1],['rx',0,15,'',1],['tx',0,5,'7D','ack',1,'w-16'],['rx',5,0,'7E01',1],
+    ['err','bit_timing',11,0,40],['rx',11,0,'8F',1],['loc',0,11,'9000',1],['rx',5,4,'8F',1],['rx',4,5,'9000',1],['rx',4,0,'91',1]
+  ];
+  ev = this.seed.map((s) => this.make(s));
+  buffer = [];
+
+  state = { tab:(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width:720px)').matches) ? 'Bus' : 'Send', paused:false, off:{}, open:0, device:'', opf:'', to:'4', data:'8F', retries:'', flight:false, last:null, dirty:0, replies:{'83':1,'8C':1,'8F':1,'9F':1,'46':1,'91':1}, acks:{0:1} };
+
+  make(s) {
+    this.clock += 40 + (this.seq * 37) % 260;
+    const e = { seq:this.seq++, t:this.clock, k:s[0] };
+    if (s[0] === 'err') return Object.assign(e, { kind:s[1], from:s[2], to:s[3], bits:s[4], dropped:0 });
+    e.from = s[1]; e.to = s[2]; e.data = s[3];
+    if (s[0] === 'rx') e.ack = !!s[4];
+    if (s[0] === 'loc') { e.status = 'ack'; e.attempts = 1; e.origin = 'local'; e.reply = e.seq - 1; }
+    if (s[0] === 'tx') { e.status = s[4]; e.attempts = s[5]; e.id = s[6]; e.origin = 'host'; }
+    return e;
+  }
+
+  name(n, to) { if (n == null) return ''; if (to && n === 15) return 'all'; return this.osd[n] || this.la[n]; }
+
+  decode(d) {
+    if (!d) return 'poll';
+    const o = d.slice(0, 2), a = d.slice(2), pa = a.slice(0, 4).split('').join('.');
+    const type = {'00':'TV','01':'Recording','03':'Tuner','04':'Playback','05':'Audio'};
+    if (o === '00') return 'Feature Abort ' + a.slice(0, 2);
+    if (o === '47') return 'Set OSD Name "' + a.replace(/../g, (h) => String.fromCharCode(parseInt(h, 16))) + '"';
+    if (o === '82') return 'Active Source ' + pa;
+    if (o === '84') return 'Report Physical Address ' + pa + ' (' + (type[a.slice(4)] || a.slice(4)) + ')';
+    if (o === '86') return 'Set Stream Path ' + pa;
+    if (o === '87') return 'Device Vendor ID ' + (a.match(/../g) || []).join(':');
+    if (o === '90') return 'Report Power Status: ' + (['On','Standby','To On','To Standby'][parseInt(a, 16)] || a);
+    if (o === '9E') return 'CEC Version ' + ({'04':'1.3a','05':'1.4','06':'2.0'}[a] || a);
+    if (o === '7A') return 'Report Audio Status';
+    return this.ops[o] || 'Unknown ' + o;
+  }
+
+  view(e) {
+    const clock = Math.floor(e.t / 1000), p = (n) => String(n).padStart(2, '0');
+    const hh = p(Math.floor(clock / 3600) % 24) + ':' + p(Math.floor(clock / 60) % 60) + ':';
+    const ss = p(clock % 60) + '.' + String(e.t % 1000).padStart(3, '0');
+    const bytes = (e.data || '').match(/../g) || [];
+    const poll = e.k !== 'err' && !e.data;
+    const open = this.state.open === e.seq;
+    const row = { seq:e.seq, hh, ss, k:e.k, kc:'k-' + e.k, fn:e.from ?? '', fm:this.name(e.from), ar:e.from == null ? '' : '→', tn:e.to ?? '', tm:this.name(e.to, true), op:bytes[0] || '', args:bytes.slice(1, 5).join(' ') + (bytes.length > 5 ? ' …' : ''), dec:this.decode(e.data), dc:'', hasRep:!!e.reply, rep:e.reply || 0, st:'', sc:'', rc:(poll ? 'poll ' : '') + (open ? 'open' : ''), open, full:bytes.join(' ') || 'none (poll)', facts:[{k:'seq',v:e.seq},{k:'t_us',v:e.t * 1000}] };
+    row.toggle = () => this.setState({ open: open ? 0 : e.seq });
+    if (e.k === 'rx') { row.st = e.ack ? 'ack' : 'nack'; row.sc = e.ack ? 's-ack' : poll ? 's-soft' : 's-bad'; }
+    if (e.k === 'loc' || e.k === 'tx') {
+      const n = e.attempts > 1 ? ' ×' + e.attempts : '';
+      row.st = e.status + n;
+      row.sc = {ack:'s-ack',nack:'s-bad',line_error:'s-bad',arb_lost:'s-n',busy:'s-n',rejected:'s-rej',sending:'s-send'}[e.status];
+      if (e.id) row.facts.push({k:'id',v:e.id});
+      row.facts.push({k:'origin',v:e.origin});
+      if (e.attempts) row.facts.push({k:'attempts',v:e.attempts});
+      if (e.reply) row.facts.push({k:'reply_to.seq',v:e.reply});
+      if (e.status === 'rejected') { row.dec = 'rejected: ' + e.reason; row.dc = 'bad'; }
+    }
+    if (e.k === 'err') { row.dec = e.kind + ' bits=' + e.bits + ' dropped=' + e.dropped; row.full = 'none'; row.facts.push({k:'kind',v:e.kind}); }
+    return row;
+  }
+
+  push(s) {
+    const e = this.make(s);
+    if (this.state.paused) this.buffer.push(e); else this.ev = this.ev.concat(e).slice(-60);
+    this.forceUpdate();
+    return e;
+  }
+
+  componentDidMount() {
+    this.timer = setInterval(() => {
+      if (this.props.live === false) return;
+      this.push(this.script[this.cursor]);
+      this.cursor = (this.cursor + 1) % this.script.length;
+    }, 1400);
+  }
+  componentWillUnmount() { clearInterval(this.timer); clearTimeout(this.flightTimer); }
+
+  resume() {
+    this.ev = this.ev.concat(this.buffer).slice(-60);
+    this.buffer = [];
+    this.setState({ paused:false });
+    if (this.scroller) this.scroller.scrollTop = 0;
+  }
+
+  submit() {
+    const data = this.state.data.replace(/\s/g, '').toUpperCase();
+    const to = +this.state.to, id = 'w-' + (++this.sent), retries = this.state.retries === '' ? (data ? 1 : 0) : +this.state.retries;
+    const pending = this.push(['tx', 0, to, data, 'sending', 0, id]);
+    this.setState({ flight:true, last:null });
+    this.flightTimer = setTimeout(() => {
+      const bad = data.length % 2 === 1 || /[^0-9A-F]/.test(data);
+      if (bad) { pending.status = 'rejected'; pending.reason = 'data_not_hex'; }
+      else if (to === 8) { pending.status = 'nack'; pending.attempts = retries + 1; }
+      else { pending.status = 'ack'; pending.attempts = 1; }
+      const v = this.view(pending);
+      this.setState({ flight:false, last:{ st:v.st, sc:v.sc === 's-rej' ? 's-bad' : v.sc, id, seq:pending.seq } });
+      if (data === '8F' && to !== 8) this.push(['rx', to, 0, '9000', 1]);
+    }, 750);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const d = (this.props.density ?? 'one-line') === 'two-line' ? 'b' : 'a';
+    const kind = (e) => e.k === 'loc' ? 'local' : e.k;
+    const match = (e) => {
+      if (s.off[kind(e)]) return false;
+      if (s.off.polls && e.k !== 'err' && !e.data) return false;
+      if (s.device !== '' && e.from !== +s.device && e.to !== +s.device) return false;
+      if (s.opf && !(e.data || '').startsWith(s.opf.toUpperCase())) return false;
+      return true;
+    };
+    const flipper = (key) => ({ label:key, on:!s.off[key], flip:() => this.setState({ off:Object.assign({}, s.off, { [key]:!s.off[key] }) }) });
+    const data = s.data.replace(/\s/g, '').toUpperCase();
+    const dataBad = data.length % 2 === 1 || /[^0-9A-F]/.test(data);
+    const isPoll = data === '';
+    const set = (name, value) => (e) => this.setState({ [name]:value(e) });
+    const toggleSet = (name, key) => () => this.setState({ [name]:Object.assign({}, s[name], { [key]:s[name][key] ? 0 : 1 }), dirty:s.dirty + 1 });
+    const rows = this.ev.filter(match);
+    const up = Math.floor(this.clock / 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    const panel = s.tab === 'Bus' ? 'Send' : s.tab;
+    return {
+      d, tab:s.tab, node:'aether',
+      tSend:panel === 'Send', tCounters:panel === 'Counters', tLog:panel === 'Log', tConfig:panel === 'Config', tOta:panel === 'OTA',
+      uptime:'3d ' + p(Math.floor(up / 3600) % 24) + ':' + p(Math.floor(up / 60) % 60) + ':' + p(up % 60),
+      rows:rows.map((e) => this.view(e)), shown:rows.length, total:this.ev.length, isEmpty:rows.length === 0,
+      toggles:['rx','tx','local','err','line','polls'].map(flipper),
+      device:s.device, opf:s.opf, onDevice:set('device', (e) => e.target.value), onOpf:set('opf', (e) => e.target.value),
+      clear:() => { this.ev = []; this.buffer = []; this.setState({ paused:false }); },
+      paused:s.paused, running:!s.paused, fresh:this.buffer.length, pauseLabel:s.paused ? 'Resume' : 'Pause',
+      togglePause:() => s.paused ? this.resume() : this.setState({ paused:true }),
+      onScroll:(e) => { this.scroller = e.currentTarget; if (e.currentTarget.scrollTop < -24 && !this.state.paused) this.setState({ paused:true }); },
+      onBus:s.tab === 'Bus', toBus:() => this.setState({ tab:'Bus' }),
+      tabs:['Send','Counters','Log','Config','OTA'].map((label) => ({ label, on:s.tab === label, pick:() => this.setState({ tab:label }) })),
+      to:s.to, data:s.data, retries:s.retries, onTo:set('to', (e) => e.target.value), onRetries:set('retries', (e) => e.target.value),
+      onData:set('data', (e) => e.target.value.toUpperCase()),
+      retryDefault:isPoll ? '0, poll' : 'default, 1', isPoll, dataBad, dataOk:!dataBad && !isPoll, decoded:this.decode(data),
+      inFlight:s.flight, sendLabel:s.flight ? 'Sending…' : 'Send',
+      send:(e) => { e.preventDefault(); if (!s.flight) this.submit(); },
+      hasLast:!!s.last, last:s.last || { st:'', sc:'', id:'', seq:0 },
+      presets:[['—','Poll',''],['8F','Power status','8F'],['46','OSD name','46'],['83','Physical addr','83'],['8C','Vendor ID','8C'],['9F','CEC version','9F'],['04','Image View On','04'],['36','Standby','36']].map((x) => ({ code:x[0], label:x[1], pick:() => this.setState({ data:x[2] }) })),
+      counters:[['rx'],['frames','18 204','+212'],['errors','27','+3'],['acked_by_us','4 118','+64'],['tx'],['host','765','+2'],['local','1 120','+61'],['ack','1 841','+60'],['nack','37','+3'],['arb_lost','3','0'],['line_error','0','0'],['busy','0','0'],['rejected','1','0'],['retransmits','12','+1'],['origin_missing','0','0'],['sample_late','2','+1'],['launch_rejected','0','0'],['echo_error','0','0'],['edge_overrun','0','0'],['driven_low_mismatch','0','0'],['queue'],['depth','0','0'],['max','4','0'],['link'],['rssi','−58','+1'],['link_count','1','0'],['outbox_dropped','0','0'],['heap'],['heap_free','142 308','−812'],['heap_min','96 412','0'],['heap_largest','64 512','0']].map((c) => {
+        const bad = ['errors','nack','arb_lost','line_error','busy','rejected','sample_late','outbox_dropped'].includes(c[0]);
+        return c.length === 1 ? { k:c[0], v:'', d:'', gc:'grp', dc:'' } : { k:c[0], v:c[1], d:c[2] === '0' ? '·' : c[2], gc:'', dc:c[2] === '0' ? 'zero' : bad ? 'neg' : 'pos' };
+      }),
+      logs:[['04:11:58.102','warn','tx_attempt_failed sample_late'],['04:02:14.771','info','stack_hwm task=cec-bus hwm=6724'],['00:00:04.318','info','mqtt_connected'],['00:00:03.902','info','wifi_connected ip=192.0.2.66']].map((l) => ({ t:l[0], lv:l[1], msg:l[2] })),
+      replies:[['83','Physical'],['8C','Vendor'],['8F','Power'],['9F','Version'],['46','OSD name'],['91','Language']].map((r) => ({ label:r[0] + ' ' + r[1], on:!!s.replies[r[0]], flip:toggleSet('replies', r[0]) })),
+      acks:Array.from({ length:15 }, (_, i) => ({ label:String(i), on:!!s.acks[i], flip:toggleSet('acks', i) })),
+      dirty:s.dirty > 0, dirtyN:s.dirty,
+      discard:() => this.setState({ dirty:0, replies:{'83':1,'8C':1,'8F':1,'9F':1,'46':1,'91':1}, acks:{0:1} })
+    };
+  }
+}
+</script>
+</body>
+</html>

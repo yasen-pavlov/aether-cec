@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bus monitor detail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--secondary)}a:hover{color:var(--hover)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+h2{margin:0;font:600 13px/20px var(--sans)}
+p{margin:0}
+.sec{display:flex;flex-direction:column;gap:8px}
+.note{padding:0 0 0 24px;font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.ln{display:grid;grid-template-columns:924px minmax(0,1fr);align-items:center;border-bottom:1px solid var(--surface-variant)}
+.btm{display:grid;grid-template-columns:924px minmax(0,1fr);align-items:start}
+.row{position:relative;display:grid;grid-template-columns:44px 96px 32px 234px 132px minmax(0,1fr) 108px;grid-template-areas:"q t k r h d s";column-gap:8px;align-items:center;height:24px;padding:0 8px;font:13px/24px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.row>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.row.hd{background:var(--surface-variant);border-bottom:1px solid var(--outline);font:12px/24px var(--sans)}
+.q{grid-area:q;color:var(--on-surface-variant)}
+.t{grid-area:t;color:var(--on-surface-variant)}
+.k{grid-area:k}.k-rx{color:var(--secondary)}.k-tx{color:var(--on-surface);font-weight:600}.k-loc{color:var(--tertiary)}
+.k-err,.k-line{justify-self:start;padding:0 3px;height:18px;line-height:18px;font-size:12px;border-radius:4px;background:var(--error);color:var(--on-error)}
+.k-ok{color:var(--hover)}
+.rt{grid-area:r;display:grid;grid-template-columns:2ch 13ch 1ch 2ch minmax(0,1fr);column-gap:1ch}
+.rt>*{overflow:hidden;text-overflow:ellipsis}.n{text-align:right}.ar{color:var(--on-surface-variant)}
+.hx{grid-area:h}.args{margin-left:1ch;color:var(--on-surface-variant)}
+.d{grid-area:d}.d.bad{color:var(--error)}.d.okc{color:var(--hover)}
+.rep{margin-right:1ch;color:var(--tertiary);text-decoration:none}
+.s{grid-area:s;display:flex;align-items:center}
+.row.poll .rt,.row.poll .d,.row.poll .hx{color:var(--on-surface-variant)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:12px/16px var(--mono);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hover)}
+.s-soft{padding:0;border:0;color:var(--error)}
+.s-bad{background:var(--error);border-color:var(--error);color:var(--on-error)}
+.s-n{border-color:var(--outline);color:var(--on-surface)}
+.s-rej{border-color:var(--error);color:var(--error)}
+.s-send{border-color:var(--primary);color:var(--primary)}
+.div{display:flex;align-items:center;gap:12px;height:24px;padding:0 8px;font:12px/24px var(--mono);color:var(--on-surface-variant)}
+.div::before,.div::after{content:"";flex:1;height:1px;background:var(--outline)}
+.mon{position:relative;display:flex;flex-direction:column;border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.bar{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px;background:var(--surface-variant);border-bottom:1px solid var(--outline)}
+.seg{display:flex;gap:4px}
+.tg{height:28px;padding:0 8px;background:transparent;border:1px solid var(--outline);border-radius:6px;font:12px/16px var(--mono)}
+.tg[aria-pressed="true"]{background:var(--outline)}
+.mini{display:flex;align-items:center;gap:6px;font:12px/16px var(--sans)}
+.mini select,.mini input{height:28px;padding:0 6px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.mini select{max-width:128px}.mini input{width:44px}
+.grow{flex:1 1 auto}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px;white-space:nowrap}
+.pill{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);height:32px;background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600;box-shadow:0 0 0 4px var(--surface)}
+.empty{padding:32px 24px;text-align:center;color:var(--on-surface-variant)}
+.b{grid-template-columns:96px 32px 234px minmax(0,1fr) 108px;grid-template-areas:"t k r d s" "q q q h s";height:44px;line-height:20px;align-content:center;border-bottom:1px solid var(--surface-variant)}
+.tag{display:inline-block;padding:0 6px;border-radius:6px;background:var(--primary);color:var(--on-primary);font:600 12px/20px var(--sans)}
+.lst{margin:0;padding:0 0 0 24px;list-style:none;font:13px/20px var(--sans);color:var(--on-surface)}
+.lst li{margin-bottom:4px}
+.big{padding:0 0 0 24px;font:600 13px/20px var(--sans)}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1416px; min-height: 2240px; padding: 32px; display: flex; flex-direction: column; gap: 32px; background: var(--surface)">
+
+  <section class="sec">
+    <h2>Row anatomy, one per event kind and status</h2>
+    <div class="ln"><div class="row hd">
+      <span style="grid-area: q">seq</span><span style="grid-area: t">uptime</span><span style="grid-area: k">kind</span><span style="grid-area: r">from → to</span><span style="grid-area: h">hex</span><span style="grid-area: d">decoded</span><span style="grid-area: s">status</span>
+    </div><p class="note">Rule for the row</p></div>
+    <sc-for list="{{anatomy}}" as="r" hint-placeholder-count="20">
+      <sc-if value="{{r.isRow}}" hint-placeholder-val="{{ true }}">
+        <div class="ln">
+          <div class="row {{r.rc}}">
+            <span class="q">{{r.seq}}</span><span class="t">{{r.t}}</span><span class="k {{r.kc}}">{{r.k}}</span>
+            <span class="rt"><span class="n">{{r.fn}}</span><span>{{r.fm}}</span><span class="ar">{{r.ar}}</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+            <span class="hx"><span>{{r.op}}</span><span class="args">{{r.args}}</span></span>
+            <span class="d {{r.dc}}"><sc-if value="{{r.rep}}" hint-placeholder-val="{{ false }}"><a class="rep" href="#anatomy">↩ {{r.rep}}</a></sc-if>{{r.dec}}</span>
+            <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+          </div>
+          <p class="note">{{r.note}}</p>
+        </div>
+      </sc-if>
+      <sc-if value="{{r.isDiv}}" hint-placeholder-val="{{ false }}">
+        <div class="ln"><div class="div">{{r.text}}</div><p class="note">{{r.note}}</p></div>
+      </sc-if>
+    </sc-for>
+  </section>
+
+  <section class="sec">
+    <h2>Polls, header-only frames</h2>
+    <sc-for list="{{polls}}" as="r" hint-placeholder-count="3">
+      <div class="ln">
+        <div class="row poll">
+          <span class="q">{{r.seq}}</span><span class="t">{{r.t}}</span><span class="k {{r.kc}}">{{r.k}}</span>
+          <span class="rt"><span class="n">{{r.fn}}</span><span>{{r.fm}}</span><span class="ar">→</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+          <span class="hx">—</span><span class="d">poll</span>
+          <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+        </div>
+        <p class="note">{{r.note}}</p>
+      </div>
+    </sc-for>
+  </section>
+
+  <section class="sec">
+    <h2>Paused, N new</h2>
+    <div class="btm">
+      <div class="mon">
+        <div class="bar">
+          <h2>Bus</h2><span style="font: 12px/16px var(--mono)">28 of 28</span>
+          <span class="grow"></span>
+          <button class="btn" type="button" style="border-color: var(--primary); color: var(--primary)"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l7 4-7 4z" fill="currentColor"></path></svg>Resume</button>
+        </div>
+        <sc-for list="{{frozen}}" as="r" hint-placeholder-count="6">
+          <div class="row {{r.rc}}">
+            <span class="q">{{r.seq}}</span><span class="t">{{r.t}}</span><span class="k {{r.kc}}">{{r.k}}</span>
+            <span class="rt"><span class="n">{{r.fn}}</span><span>{{r.fm}}</span><span class="ar">{{r.ar}}</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+            <span class="hx"><span>{{r.op}}</span><span class="args">{{r.args}}</span></span>
+            <span class="d">{{r.dec}}</span>
+            <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+          </div>
+        </sc-for>
+        <div style="height: 32px"></div>
+        <button class="btn pill" type="button">Resume · 37 new</button>
+      </div>
+      <ul class="lst">
+        <li>Scrolling up by one row pauses. Pause does the same.</li>
+        <li>The view freezes; events keep counting in the pill.</li>
+        <li>Resume appends the backlog and jumps to newest.</li>
+        <li>Backlog over the 500-row cap drops oldest first.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Filters</h2>
+    <div class="btm">
+      <div class="mon">
+        <div class="bar" style="border-bottom: 0">
+          <h2>Bus</h2><span style="font: 12px/16px var(--mono)">412 of 412</span>
+          <div class="seg"><button class="tg" type="button" aria-pressed="true">rx</button><button class="tg" type="button" aria-pressed="true">tx</button><button class="tg" type="button" aria-pressed="true">local</button><button class="tg" type="button" aria-pressed="true">err</button><button class="tg" type="button" aria-pressed="true">line</button><button class="tg" type="button" aria-pressed="true">polls</button></div>
+          <label class="mini">Device<select><option>any</option></select></label>
+          <label class="mini">Opcode<input value=""></label>
+          <span class="grow"></span><button class="btn" type="button">Clear</button><button class="btn" type="button">Pause</button>
+        </div>
+      </div>
+      <p class="note">Default: everything on. Filled means shown.</p>
+    </div>
+    <div class="btm">
+      <div class="mon">
+        <div class="bar" style="border-bottom: 0">
+          <h2>Bus</h2><span style="font: 12px/16px var(--mono)">12 of 412</span>
+          <div class="seg"><button class="tg" type="button" aria-pressed="true">rx</button><button class="tg" type="button" aria-pressed="true">tx</button><button class="tg" type="button" aria-pressed="true">local</button><button class="tg" type="button" aria-pressed="true">err</button><button class="tg" type="button" aria-pressed="true">line</button><button class="tg" type="button" aria-pressed="false">polls</button></div>
+          <label class="mini">Device<select><option>4 Apple TV</option></select></label>
+          <label class="mini">Opcode<input value="8F"></label>
+          <span class="grow"></span><button class="btn" type="button">Reset filters</button><button class="btn" type="button">Pause</button>
+        </div>
+      </div>
+      <p class="note">Device matches from or to. Opcode matches the first byte. Filters only hide rows; hidden events still count. Err rows ignore device and opcode when their route is unknown, so a fault is never filtered away silently.</p>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Empty states</h2>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+      <div class="mon"><p class="empty">Stream is live. Frames appear here as the bus carries them.</p></div>
+      <div class="mon"><div class="empty"><p>All 412 events are hidden by filters.</p><button class="btn" type="button" style="margin-top: 8px">Reset filters</button></div></div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Direction A: one line per event, hex and decoded side by side</h2>
+    <div class="btm">
+      <div class="mon">
+        <div class="row hd"><span style="grid-area: q">seq</span><span style="grid-area: t">uptime</span><span style="grid-area: k">kind</span><span style="grid-area: r">from → to</span><span style="grid-area: h">hex</span><span style="grid-area: d">decoded</span><span style="grid-area: s">status</span></div>
+        <sc-for list="{{density}}" as="r" hint-placeholder-count="10">
+          <div class="row {{r.rc}}">
+            <span class="q">{{r.seq}}</span><span class="t">{{r.t}}</span><span class="k {{r.kc}}">{{r.k}}</span>
+            <span class="rt"><span class="n">{{r.fn}}</span><span>{{r.fm}}</span><span class="ar">{{r.ar}}</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+            <span class="hx"><span>{{r.op}}</span><span class="args">{{r.args}}</span></span>
+            <span class="d {{r.dc}}"><sc-if value="{{r.rep}}" hint-placeholder-val="{{ false }}"><a class="rep" href="#a">↩ {{r.rep}}</a></sc-if>{{r.dec}}</span>
+            <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <p class="big"><span class="tag">Recommended</span></p>
+        <p class="big">27 rows at 1280×800, 24 px each</p>
+        <ul class="lst">
+          <li>At 10 rows/s a row stays on screen about 2.7 s.</li>
+          <li>Each field holds one column, so the eye reads straight down.</li>
+          <li>Long frames cut off; opening the row shows them whole.</li>
+          <li>At 390 wide the same markup reflows to two lines.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>Direction B: two-line rows, decoded on top, raw hex and ids below</h2>
+    <div class="btm">
+      <div class="mon">
+        <sc-for list="{{densityB}}" as="r" hint-placeholder-count="6">
+          <div class="row b {{r.rc}}">
+            <span class="t">{{r.t}}</span><span class="k {{r.kc}}">{{r.k}}</span>
+            <span class="rt"><span class="n">{{r.fn}}</span><span>{{r.fm}}</span><span class="ar">{{r.ar}}</span><span class="n">{{r.tn}}</span><span>{{r.tm}}</span></span>
+            <span class="d {{r.dc}}">{{r.dec}}</span>
+            <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+            <span class="q">{{r.ids}}</span>
+            <span class="hx"><span>{{r.op}}</span><span class="args">{{r.args}}</span></span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <p class="big">15 rows at 1280×800, 44 px each</p>
+        <ul class="lst">
+          <li>At 10 rows/s a row stays on screen about 1.5 s.</li>
+          <li>Full hex and ids show without opening anything.</li>
+          <li>Decoded text is never cut off at 1280.</li>
+          <li>Two text lines per event double what the eye scans.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1416,"height":2240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const row = (x) => ({ isRow:true, isDiv:false, seq:x.q, t:x.t, k:x.k, kc:x.kc || 'k-' + x.k, fn:x.f ?? '', fm:x.fm || '', ar:x.f == null ? '' : '→', tn:x.o ?? '', tm:x.om || '', op:x.op || '', args:x.a || '', dec:x.d, dc:x.dc || '', st:x.st || '', sc:x.sc || '', rep:x.rep || 0, rc:x.rc || '', note:x.n, ids:x.ids || '' });
+    const anatomy = [
+      { q:18401, t:'04:12:07.418', k:'rx', f:4, fm:'Apple TV', o:0, om:'TV', op:'8F', d:'Give Device Power Status', st:'ack', sc:'s-ack', n:'rx directed. Kind is secondary. ack is plain text so a healthy bus stays quiet.' },
+      { q:18402, t:'04:12:07.602', k:'rx', f:4, fm:'Apple TV', o:8, om:'Playback 2', op:'8F', d:'Give Device Power Status', st:'nack', sc:'s-bad', n:'rx not acknowledged. Filled, because a real frame went unanswered.' },
+      { q:18403, t:'04:12:07.840', k:'rx', f:4, fm:'Apple TV', o:15, om:'all', op:'82', a:'20 00', d:'Active Source 2.0.0.0', st:'ack', sc:'s-ack', n:'Broadcast. 15 reads all as a target. ack:true means nobody objected.' },
+      { q:18404, t:'04:12:08.011', k:'rx', f:15, fm:'Unregistered', o:0, om:'TV', op:'8C', d:'Give Device Vendor ID', st:'ack', sc:'s-ack', n:'Initiator 15. The bridge never replies, so no local row follows.' },
+      { q:18405, t:'04:12:08.033', k:'tx', f:0, fm:'TV', o:5, om:'AVR-X3800H', op:'7D', d:'Give System Audio Mode Status', st:'ack', sc:'s-ack', n:'tx host, first attempt.' },
+      { q:18406, t:'04:12:08.260', k:'tx', f:0, fm:'TV', o:4, om:'Apple TV', op:'9F', d:'Get CEC Version', st:'ack ×2', sc:'s-ack', n:'Attempts over 1 always show.' },
+      { q:18407, t:'04:12:08.512', k:'tx', f:0, fm:'TV', o:8, om:'Playback 2', op:'8F', d:'Give Device Power Status', st:'nack ×2', sc:'s-bad', n:'Retries exhausted.' },
+      { q:18408, t:'04:12:08.790', k:'tx', f:0, fm:'TV', o:4, om:'Apple TV', op:'8F', d:'Give Device Power Status', st:'arb_lost ×3', sc:'s-n', n:'Neutral: normal contention, not a fault.' },
+      { q:18409, t:'04:12:09.102', k:'tx', f:0, fm:'TV', o:4, om:'Apple TV', op:'36', d:'Standby', st:'line_error ×5', sc:'s-bad', n:'Filled: collision or bus fault on the final attempt.' },
+      { q:18410, t:'04:12:09.340', k:'tx', f:0, fm:'TV', o:5, om:'AVR-X3800H', op:'70', a:'00 00', d:'System Audio Mode Request', st:'busy', sc:'s-n', n:'Queue full or bus busy. No attempts field, so no count.' },
+      { q:18411, t:'04:12:09.355', k:'tx', o:4, om:'Apple TV', op:'8', d:'rejected: data_not_hex', dc:'bad', st:'rejected', sc:'s-rej', n:'Never reached the bus. Fields may be absent, so cells stay blank. Reason sits in decoded.' },
+      { q:18412, t:'04:12:09.360', k:'tx', d:'rejected: malformed', dc:'bad', st:'rejected', sc:'s-rej', n:'Worst case: no from, to or data at all.' },
+      { q:18413, t:'04:12:09.611', k:'rx', f:5, fm:'AVR-X3800H', o:0, om:'TV', op:'46', d:'Give OSD Name', st:'ack', sc:'s-ack', n:'The trigger for the local reply below.' },
+      { q:18414, t:'04:12:09.640', k:'loc', f:0, fm:'TV', o:5, om:'AVR-X3800H', op:'47', a:'41 65 74 68 …', d:'Set OSD Name "Aether"', rep:18413, st:'ack', sc:'s-ack', n:'tx origin local. Tertiary kind. The ↩ link jumps to reply_to.seq.' },
+      { q:18415, t:'04:12:09.902', k:'err', f:11, fm:'PlayStation 5', o:0, om:'TV', d:'bit_timing bits=40 dropped=0', n:'err with a known route. The kind is filled.' },
+      { q:18416, t:'04:12:10.018', k:'err', d:'start_bit bits=0 dropped=0', n:'err with null from and to. Route stays blank.' },
+      { q:18417, t:'04:12:10.024', k:'err', d:'overrun dropped=4', n:'overrun carries only dropped.' },
+      { q:18418, t:'04:12:11.300', k:'line', d:'stuck_low', dc:'bad', n:'line fault. Also raises the header banner.' },
+      { q:18419, t:'04:12:11.301', k:'line', d:'no_pullup', dc:'bad', n:'Same treatment as stuck_low.' },
+      { q:18420, t:'04:12:14.870', k:'line', kc:'k-ok', d:'ok', dc:'okc', n:'Recovery. Not filled.' }
+    ].map(row);
+    anatomy.push({ isRow:false, isDiv:true, text:'14 events missed, seq 18421 to 18434', note:'Page-made marker when seq jumps. There is no replay.' });
+    anatomy.push({ isRow:false, isDiv:true, text:'boot 129 software', note:'Page-made marker: seq and t_us restart at 0 on a new boot.' });
+    const polls = [
+      { seq:18421, t:'04:12:15.102', k:'rx', kc:'k-rx', fn:4, fm:'Apple TV', tn:0, tm:'TV', st:'ack', sc:'s-ack', note:'Row dims, hex shows a dash, ack keeps its colour.' },
+      { seq:18422, t:'04:12:15.220', k:'rx', kc:'k-rx', fn:4, fm:'Apple TV', tn:8, tm:'Playback 2', st:'nack', sc:'s-soft', note:'nack is unfilled here: it is evidence that nobody is at 8, not a fault.' },
+      { seq:18423, t:'04:12:15.418', k:'tx', kc:'k-tx', fn:0, fm:'TV', tn:11, tm:'PlayStation 5', st:'nack', sc:'s-soft', note:'Host poll. Always one attempt, so it never shows ×n.' }
+    ];
+    const set = [
+      { q:18390, t:'04:11:58.214', k:'rx', f:4, fm:'Apple TV', o:15, om:'all', op:'87', a:'00 E0 91', d:'Device Vendor ID 00:E0:91', st:'ack', sc:'s-ack' },
+      { q:18391, t:'04:11:58.381', k:'rx', f:4, fm:'Apple TV', o:0, om:'TV', op:'8F', d:'Give Device Power Status', st:'ack', sc:'s-ack' },
+      { q:18392, t:'04:11:58.402', k:'loc', f:0, fm:'TV', o:4, om:'Apple TV', op:'90', a:'00', d:'Report Power Status: On', rep:18391, st:'ack', sc:'s-ack' },
+      { q:18393, t:'04:11:58.655', k:'rx', f:4, fm:'Apple TV', o:0, om:'TV', op:'46', d:'Give OSD Name', st:'ack', sc:'s-ack' },
+      { q:18394, t:'04:11:58.691', k:'loc', f:0, fm:'TV', o:4, om:'Apple TV', op:'47', a:'41 65 74 68 …', d:'Set OSD Name "Aether"', rep:18393, st:'ack', sc:'s-ack' },
+      { q:18395, t:'04:11:59.118', k:'rx', f:4, fm:'Apple TV', o:5, om:'AVR-X3800H', op:'—', d:'poll', st:'ack', sc:'s-ack', rc:'poll' },
+      { q:18396, t:'04:11:59.240', k:'rx', f:4, fm:'Apple TV', o:8, om:'Playback 2', op:'—', d:'poll', st:'nack', sc:'s-soft', rc:'poll' },
+      { q:18397, t:'04:11:59.702', k:'rx', f:11, fm:'PlayStation 5', o:15, om:'all', op:'84', a:'30 00 04', d:'Report Physical Address 3.0.0.0 (Playback)', st:'ack', sc:'s-ack' },
+      { q:18398, t:'04:11:59.911', k:'tx', f:0, fm:'TV', o:8, om:'Playback 2', op:'8F', d:'Give Device Power Status', st:'nack ×2', sc:'s-bad' },
+      { q:18399, t:'04:12:00.026', k:'err', f:11, fm:'PlayStation 5', o:0, om:'TV', d:'bit_timing bits=40 dropped=0' }
+    ].map(row);
+    const b = set.slice(0, 6).map((r) => Object.assign({}, r, { ids:'#' + r.seq + '  ' + r.fn + ' → ' + r.tn }));
+    return { anatomy, polls, frozen:set.slice(0, 5), density:set, densityB:b };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aether phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{--surface:#212121;--surface-variant:#323232;--outline:#474747;--on-surface:#b0bec5;--on-surface-variant:#8c8b8b;--primary:#ff9800;--secondary:#82aaff;--tertiary:#c792ea;--hover:#80cbc4;--error:#ff5370;--on-primary:#212121;--on-error:#212121;--mono:ui-monospace,"JetBrains Mono",monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--on-surface);font:14px/20px var(--sans)}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--secondary)}a:hover{color:var(--hover)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.cap{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.ph{display:grid;grid-template-rows:44px minmax(0,1fr) 52px 52px;width:390px;height:844px;background:var(--surface);border:1px solid var(--outline);border-radius:10px;overflow:hidden}
+.ph.form{grid-template-rows:44px minmax(0,1fr) 52px}
+.head{display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--outline);white-space:nowrap}
+.brand{font:600 14px/20px var(--mono)}
+.live{display:flex;align-items:center;gap:6px;font:12px/16px var(--mono);color:var(--primary)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--primary)}
+.hk{display:flex;align-items:baseline;gap:4px}
+.hk>span:first-child{font:12px/16px var(--sans);color:var(--on-surface-variant)}
+.hk>span:last-child{font:13px/20px var(--mono)}
+.grow{flex:1 1 auto}
+.more{width:44px;height:43px;margin-right:-12px;background:none;border:0;cursor:pointer}
+.list{position:relative;display:flex;flex-direction:column-reverse;min-height:0;overflow:hidden}
+.row{position:relative;display:grid;grid-template-columns:32px minmax(0,1fr) auto;grid-template-areas:"k r s" "h d t";column-gap:8px;align-items:center;height:48px;padding:2px 12px;border-bottom:1px solid var(--surface-variant);font:13px/22px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.row>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.seq{position:absolute;inset:0;padding:0;background:none;border:0;cursor:pointer}
+.seq:focus-visible{outline-offset:-2px}
+.open{box-shadow:inset 0 0 0 1px var(--hover)}
+.k{grid-area:k}.k-rx{color:var(--secondary)}.k-tx{color:var(--on-surface);font-weight:600}.k-loc{color:var(--tertiary)}
+.k-err{justify-self:start;padding:0 3px;height:18px;line-height:18px;font-size:12px;border-radius:4px;background:var(--error);color:var(--on-error)}
+.r{grid-area:r}.ar{margin:0 1ch;color:var(--on-surface-variant)}
+.h{grid-area:h}
+.d{grid-area:d}
+.t{grid-area:t;color:var(--on-surface-variant)}
+.s{grid-area:s;display:flex}
+.poll .r,.poll .d,.poll .h{color:var(--on-surface-variant)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 5px;border:1px solid transparent;border-radius:6px;font:12px/16px var(--mono);white-space:nowrap}
+.s-ack{padding:0;border:0;color:var(--hover)}
+.s-soft{padding:0;border:0;color:var(--error)}
+.s-bad{background:var(--error);border-color:var(--error);color:var(--on-error)}
+.det{display:grid;gap:2px;padding:8px 12px 12px 52px;border-bottom:1px solid var(--outline);font:13px/20px var(--mono)}
+.det b{display:inline-block;width:92px;font:12px/20px var(--sans);color:var(--on-surface-variant)}
+.pill{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);height:44px;padding:0 16px;background:var(--primary);border:0;border-radius:6px;color:var(--on-primary);font-weight:600;box-shadow:0 0 0 4px var(--surface);white-space:nowrap}
+.bar{display:flex;align-items:center;gap:4px;padding:0 8px;background:var(--surface-variant);border-top:1px solid var(--outline)}
+.tg{height:36px;min-width:44px;padding:0 6px;background:transparent;border:1px solid var(--outline);border-radius:6px;font:12px/16px var(--mono)}
+.tg[aria-pressed="true"]{background:var(--outline)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:44px;padding:0 12px;background:transparent;border:1px solid var(--outline);border-radius:6px}
+.btn.pri{width:100%;background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.tabs{display:flex;background:var(--surface-variant);border-top:1px solid var(--outline)}
+.tab{flex:1;height:51px;padding:0;background:none;border:0;border-top:2px solid transparent;font-size:12px}
+.tab[aria-pressed="true"]{color:var(--primary);border-top-color:var(--primary);font-weight:600}
+.pane{display:flex;flex-direction:column;gap:12px;min-height:0;overflow:auto;padding:12px;background:var(--surface-variant)}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld>label,.fld>span{font:12px/16px var(--sans)}
+.inp{width:100%;height:44px;padding:0 8px;background:var(--surface-variant);border:1px solid var(--outline);border-radius:6px;font:13px/20px var(--mono)}
+.dec{font:13px/20px var(--mono)}
+.pres{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.pre{display:flex;gap:6px;align-items:center;height:44px;padding:0 8px;background:transparent;border:1px solid var(--outline);border-radius:6px;font-size:12px;white-space:nowrap}
+.pre b{font:12px/16px var(--mono)}
+.res{display:flex;align-items:center;gap:8px;font:13px/20px var(--mono)}
+.sep{height:1px;margin:0;background:var(--outline);border:0}
+</style>
+</helmet>
+<div style="box-sizing: border-box; width: 1298px; height: 936px; padding: 32px; display: flex; gap: 32px; background: var(--surface)">
+
+  <div style="display: flex; flex-direction: column; gap: 8px">
+    <span class="cap">Bus, following newest</span>
+    <div class="ph">
+      <header class="head">
+        <div class="live"><span class="dot"></span><span>live</span></div>
+        <span class="brand">aether</span>
+        <div class="hk"><span>bus</span><span style="color: var(--hover)">ok</span></div>
+        <div class="hk"><span>LA</span><span>0</span></div>
+        <div class="hk"><span>RSSI</span><span>−58</span></div>
+        <span class="grow"></span>
+        <button class="more" type="button" aria-label="Show full status"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg></button>
+      </header>
+      <div class="list"><div>
+        <sc-for list="{{rows}}" as="r" hint-placeholder-count="15">
+          <div class="row {{r.rc}}">
+            <button class="seq" type="button" aria-label="Event {{r.seq}} details"></button>
+            <span class="k {{r.kc}}">{{r.k}}</span>
+            <span class="r">{{r.from}}<span class="ar">→</span>{{r.to}}</span>
+            <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+            <span class="h">{{r.op}}</span><span class="d">{{r.dec}}</span><span class="t">{{r.ss}}</span>
+          </div>
+        </sc-for>
+      </div></div>
+      <div class="bar" role="group" aria-label="Filters and pause">
+        <button class="tg" type="button" aria-pressed="true">rx</button>
+        <button class="tg" type="button" aria-pressed="true">tx</button>
+        <button class="tg" type="button" aria-pressed="true">local</button>
+        <button class="tg" type="button" aria-pressed="true">err</button>
+        <button class="tg" type="button" aria-pressed="false">polls</button>
+        <span class="grow"></span>
+        <button class="btn" type="button" style="height: 36px; padding: 0 8px"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1h2v8H2zM6 1h2v8H6z" fill="currentColor"></path></svg>Pause</button>
+      </div>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="true">Bus</button><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 8px">
+    <span class="cap">Bus, paused by scrolling up, one row open</span>
+    <div class="ph">
+      <header class="head">
+        <div class="live"><span class="dot"></span><span>live</span></div>
+        <span class="brand">aether</span>
+        <div class="hk"><span>bus</span><span style="color: var(--hover)">ok</span></div>
+        <div class="hk"><span>LA</span><span>0</span></div>
+        <div class="hk"><span>RSSI</span><span>−58</span></div>
+        <span class="grow"></span>
+        <button class="more" type="button" aria-label="Show full status"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg></button>
+      </header>
+      <div class="list">
+        <div style="position: absolute; left: 0; right: 0; top: 0">
+          <sc-for list="{{rowsPaused}}" as="r" hint-placeholder-count="9">
+            <div class="row {{r.rc}}">
+              <button class="seq" type="button" aria-expanded="{{r.open}}" aria-label="Event {{r.seq}} details"></button>
+              <span class="k {{r.kc}}">{{r.k}}</span>
+              <span class="r">{{r.from}}<span class="ar">→</span>{{r.to}}</span>
+              <span class="s"><span class="chip {{r.sc}}">{{r.st}}</span></span>
+              <span class="h">{{r.op}}</span><span class="d">{{r.dec}}</span><span class="t">{{r.ss}}</span>
+            </div>
+            <sc-if value="{{r.open}}" hint-placeholder-val="{{ false }}">
+              <div class="det">
+                <div><b>data</b>84 20 00 00 04</div>
+                <div><b>seq</b>18402</div>
+                <div><b>t_us</b>15128903000</div>
+                <div><b>ack</b>true</div>
+              </div>
+            </sc-if>
+          </sc-for>
+        </div>
+        <button class="pill" type="button">Resume · 37 new</button>
+      </div>
+      <div class="bar" role="group" aria-label="Filters and pause">
+        <button class="tg" type="button" aria-pressed="true">rx</button>
+        <button class="tg" type="button" aria-pressed="true">tx</button>
+        <button class="tg" type="button" aria-pressed="true">local</button>
+        <button class="tg" type="button" aria-pressed="true">err</button>
+        <button class="tg" type="button" aria-pressed="false">polls</button>
+        <span class="grow"></span>
+        <button class="btn" type="button" style="height: 36px; padding: 0 8px; border-color: var(--primary); color: var(--primary)">Paused</button>
+      </div>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="true">Bus</button><button class="tab" type="button" aria-pressed="false">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 8px">
+    <span class="cap">Send, thumb-sized controls</span>
+    <div class="ph form">
+      <header class="head">
+        <div class="live"><span class="dot"></span><span>live</span></div>
+        <span class="brand">aether</span>
+        <div class="hk"><span>bus</span><span style="color: var(--hover)">ok</span></div>
+        <div class="hk"><span>LA</span><span>0</span></div>
+        <div class="hk"><span>RSSI</span><span>−58</span></div>
+      </header>
+      <form class="pane">
+        <div class="res" aria-live="polite"><span class="chip s-ack">ack</span><span>w-17</span><a href="#send">seq 18430</a></div>
+        <div class="two">
+          <div class="fld"><label for="to3">To</label><select id="to3" class="inp"><option>4 Apple TV</option></select></div>
+          <div class="fld"><label for="re3">Retries</label><select id="re3" class="inp"><option>default, 1</option></select></div>
+        </div>
+        <div class="fld"><label for="da3">Data, hex</label><input id="da3" class="inp" value="8F" spellcheck="false"><span class="dec">Give Device Power Status</span></div>
+        <hr class="sep">
+        <div class="fld"><span>Presets fill the form; nothing is sent until Send.</span>
+          <div class="pres">
+            <sc-for list="{{presets}}" as="p" hint-placeholder-count="8"><button class="pre" type="button"><b>{{p.code}}</b>{{p.label}}</button></sc-for>
+          </div>
+        </div>
+        <span class="grow"></span>
+        <button class="btn pri" type="submit">Send</button>
+      </form>
+      <nav class="tabs" aria-label="Panels"><button class="tab" type="button" aria-pressed="false">Bus</button><button class="tab" type="button" aria-pressed="true">Send</button><button class="tab" type="button" aria-pressed="false">Counters</button><button class="tab" type="button" aria-pressed="false">Log</button><button class="tab" type="button" aria-pressed="false">Config</button><button class="tab" type="button" aria-pressed="false">OTA</button></nav>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1298,"height":936}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const row = (x) => ({ seq:x[0], k:x[1], kc:'k-' + x[1], from:x[2], to:x[3], op:x[4], dec:x[5], ss:x[6], st:x[7], sc:x[8] || 's-ack', rc:(x[4] === '—' ? 'poll ' : '') + (x[9] ? 'open' : ''), open:!!x[9] });
+    const rows = [
+      [18401,'rx','4 Apple TV','15 all','87','Device Vendor ID 00:E0:91','02.214','ack'],
+      [18402,'rx','4 Apple TV','0 TV','8F','Give Device Power Status','02.381','ack'],
+      [18403,'loc','0 TV','4 Apple TV','90','Report Power Status: On','02.402','ack'],
+      [18404,'rx','4 Apple TV','0 TV','46','Give OSD Name','02.655','ack'],
+      [18405,'loc','0 TV','4 Apple TV','47','Set OSD Name "Aether"','02.691','ack'],
+      [18406,'rx','4 Apple TV','5 AVR-X3800H','—','poll','03.118','ack'],
+      [18407,'rx','4 Apple TV','8 Playback 2','—','poll','03.240','nack','s-soft'],
+      [18408,'rx','11 PlayStation 5','15 all','84','Report Physical Address 3.0.0.0','03.702','ack'],
+      [18409,'rx','11 PlayStation 5','0 TV','9F','Get CEC Version','03.911','ack'],
+      [18410,'loc','0 TV','11 PlayStation 5','9E','CEC Version 1.4','03.939','ack'],
+      [18411,'tx','0 TV','8 Playback 2','8F','Give Device Power Status','04.417','nack ×2','s-bad'],
+      [18412,'rx','5 AVR-X3800H','15 all','84','Report Physical Address 1.0.0.0','04.802','ack'],
+      [18413,'err','11 PlayStation 5','0 TV','','bit_timing bits=40 dropped=0','05.026',''],
+      [18414,'rx','11 PlayStation 5','0 TV','8F','Give Device Power Status','05.390','ack'],
+      [18415,'loc','0 TV','11 PlayStation 5','90','Report Power Status: On','05.412','ack'],
+      [18416,'rx','4 Apple TV','15 all','82','Active Source 2.0.0.0','05.977','ack']
+    ];
+    const paused = [
+      [18398,'rx','4 Apple TV','0 TV','—','poll','01.410','ack'],
+      [18399,'rx','4 Apple TV','15 all','84','Report Physical Address 2.0.0.0','01.602','ack','s-ack',1],
+      [18400,'rx','4 Apple TV','15 all','87','Device Vendor ID 00:E0:91','02.214','ack'],
+      [18402,'rx','4 Apple TV','0 TV','8F','Give Device Power Status','02.381','ack'],
+      [18403,'loc','0 TV','4 Apple TV','90','Report Power Status: On','02.402','ack'],
+      [18404,'rx','4 Apple TV','0 TV','46','Give OSD Name','02.655','ack'],
+      [18405,'loc','0 TV','4 Apple TV','47','Set OSD Name "Aether"','02.691','ack'],
+      [18406,'rx','4 Apple TV','5 AVR-X3800H','—','poll','03.118','ack'],
+      [18407,'rx','4 Apple TV','8 Playback 2','—','poll','03.240','nack','s-soft'],
+      [18408,'rx','11 PlayStation 5','15 all','84','Report Physical Address 3.0.0.0','03.702','ack']
+    ];
+    return {
+      rows:rows.map(row), rowsPaused:paused.map(row),
+      presets:[['—','Poll'],['8F','Power status'],['46','OSD name'],['83','Physical addr'],['8C','Vendor ID'],['9F','CEC version'],['04','Image View On'],['36','Standby']].map((p) => ({ code:p[0], label:p[1] }))
+    };
+  }
+}
+</script>
+</body>
+</html>

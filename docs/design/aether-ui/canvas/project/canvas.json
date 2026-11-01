@@ -1,0 +1,35 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-11-01T09:50:00Z" },
+  "title": "Aether web UI",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1280, "h": 800, "title": "1 Desktop overview", "expand": "fill", "is_interactive": true },
+    "02-phone.dc.html": { "x": 1360, "y": 0, "w": 1298, "h": 936, "title": "2 Phone" },
+    "03-bus-monitor.dc.html": { "x": 0, "y": 1336, "w": 1416, "h": 2240, "title": "3 Bus monitor detail" },
+    "04-send-frame.dc.html": { "x": 1496, "y": 1336, "w": 1416, "h": 1100, "title": "4 Send frame" },
+    "05-configuration.dc.html": { "x": 2992, "y": 1336, "w": 1416, "h": 920, "title": "5 Configuration" },
+    "06-counters-log-ota.dc.html": { "x": 0, "y": 3976, "w": 1416, "h": 1060, "title": "6 Counters, log, OTA" },
+    "07-header-states.dc.html": { "x": 1496, "y": 3976, "w": 1758, "h": 1160, "title": "7 Header states" },
+    "08-visual-system.dc.html": { "x": 3334, "y": 3976, "w": 1280, "h": 1320, "title": "8 Visual system" },
+    "09-engineering-delta.dc.html": { "x": 4694, "y": 3976, "w": 1280, "h": 1240, "title": "9 Engineering delta" }
+  },
+  "order": [
+    "Main.dc.html",
+    "02-phone.dc.html",
+    "03-bus-monitor.dc.html",
+    "04-send-frame.dc.html",
+    "05-configuration.dc.html",
+    "06-counters-log-ota.dc.html",
+    "07-header-states.dc.html",
+    "08-visual-system.dc.html",
+    "09-engineering-delta.dc.html"
+  ],
+  "notes": {
+    "row-live": { "x": 0, "y": -260, "text": "Live surfaces", "kind": "title1", "maxW": 2658 },
+    "row-detail": { "x": 0, "y": 1076, "text": "Component detail", "kind": "title1", "maxW": 4408 },
+    "row-system": { "x": 0, "y": 3716, "text": "States, system, delta", "kind": "title1", "maxW": 5974 }
+  },
+  "designSystems": []
+}
