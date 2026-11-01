@@ -328,10 +328,6 @@ impl Hardware {
                 };
                 sys::esp!(sys::esp_timer_create(&args, handle))?;
             }
-            sys::esp!(sys::gpio_install_isr_service(
-                sys::ESP_INTR_FLAG_IRAM as i32 | sys::ESP_INTR_FLAG_LEVEL3 as i32
-            ))?;
-            hw.service_owned = true;
             sys::esp!(sys::gpio_set_intr_type(
                 pin,
                 sys::gpio_int_type_t_GPIO_INTR_ANYEDGE
@@ -342,12 +338,22 @@ impl Hardware {
     /// Bind ISR notifications to the calling (bus) task and arm the edge interrupt.
     /// Bench: binding to the constructing task (main, since init moved to core 0)
     /// left the bus task never woken and wedged boot on a live bus.
+    /// The GPIO ISR service is installed here too: `gpio_install_isr_service`
+    /// allocates the interrupt on the calling core, and installing it from main
+    /// put the edge ISR on core 0 next to Wi-Fi/TLS, where it ran 0.3–0.9 ms
+    /// late under MQTT load (phase 3.1 `err` evidence, 2026-11-01).
     pub fn arm(&mut self) -> crate::config::Result<()> {
         let interrupts = &mut **self.interrupts;
         interrupts.task.store(
             unsafe { sys::xTaskGetCurrentTaskHandle() } as usize,
             Ordering::Release,
         );
+        unsafe {
+            sys::esp!(sys::gpio_install_isr_service(
+                sys::ESP_INTR_FLAG_IRAM as i32 | sys::ESP_INTR_FLAG_LEVEL3 as i32
+            ))?;
+        }
+        self.service_owned = true;
         let arg = (interrupts as *mut Interrupts).cast();
         sys::esp!(unsafe { sys::gpio_isr_handler_add(interrupts.pin, Some(edge_isr), arg) })?;
         Ok(())
