@@ -128,6 +128,15 @@ fn upload_headers_validate_boundaries_before_writing() {
     }
 }
 #[test]
+fn sse_admission_caps_clients_and_requires_heap_headroom() {
+    assert!(sse_admit(0, SSE_HEAP_FLOOR));
+    assert!(sse_admit(2, 78_000));
+    assert!(!sse_admit(3, 200_000));
+    assert!(!sse_admit(0, SSE_HEAP_FLOOR - 1));
+    // Boot 141 with one console open (50.8 KB free): a second stream is refused.
+    assert!(!sse_admit(1, 50_824));
+}
+#[test]
 fn ring_evicts_oldest_and_sse_has_exact_framing() {
     let mut ring = LogRing::default();
     for t_us in 0..100 {

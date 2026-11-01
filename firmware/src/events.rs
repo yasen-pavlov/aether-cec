@@ -27,7 +27,7 @@ impl Hub {
     pub fn subscribe(&self) -> Option<Subscription> {
         let mut clients = self.clients.lock().unwrap();
         clients.retain(|client| client.alive.load(Ordering::Acquire));
-        if clients.len() >= 3 {
+        if !aether_logic::http::sse_admit(clients.len(), crate::ffi::heap().0) {
             return None;
         }
         let (tx, rx) = mpsc::sync_channel(16);

@@ -100,6 +100,16 @@ pub fn ota_headers(
     }
     Ok((length, digest))
 }
+/// Free heap a new event stream must leave behind for main's burst headroom
+/// (~30 KB observed necessary) plus the stream's own cost (~27 KB: 8 KiB task
+/// stack, async request copy, socket buffers for the stream and the page's
+/// parallel requests). Boot 140 (2026-11-01) ran main out of heap with three streams open.
+pub const SSE_HEAP_FLOOR: u32 = 60_000;
+/// Admit one more SSE client: hard cap of three, and only while the heap can
+/// carry it. Refused clients get `409 busy` and retry with backoff.
+pub fn sse_admit(active: usize, heap_free: u32) -> bool {
+    active < 3 && heap_free >= SSE_HEAP_FLOOR
+}
 /// Format one SSE message; JSON must be the same single-line serialized payload as MQTT.
 pub fn sse(topic: &str, payload: &str) -> Option<String> {
     if !matches!(topic, "bus" | "status" | "ota" | "telemetry") || payload.contains(['\r', '\n']) {

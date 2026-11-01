@@ -398,8 +398,8 @@ function hv(id,t,c=''){const e=$(id);e.textContent=t;e.className=c}
 function renderHead(){
 const tk=authOk(),la='la' in st;
 $('head').classList.toggle('stale',live==='lost');
-$('live').className='st '+({live:'live',lost:'recon',connecting:'recon'}[live]||'none');
-T('liveT',{live:'live',lost:'reconnecting',connecting:'connecting',none:'no token',denied:'token rejected',offline:'restarting'}[live]);
+$('live').className='st '+({live:'live',lost:'recon',connecting:'recon',busy:'recon'}[live]||'none');
+T('liveT',{live:'live',lost:'reconnecting',connecting:'connecting',busy:'stream busy',none:'no token',denied:'token rejected',offline:'restarting'}[live]);
 T('hNode',cfg?.node||'aether');
 hv('hBus',tk?st.bus??'—':'—',!tk||!st.bus?'v-dim':st.bus==='ok'?'v-ok':'v-bad');
 hv('hLa',!tk||!la?'—':st.la==null?'allocating':st.la===15?'15 none free':laLabel(st.la),!tk||!la?'v-dim':st.la==null?'v-wait':st.la===15?'v-bad':'');
@@ -419,6 +419,7 @@ const b=[],sh='<code>show token</code> on the serial console prints it.';
 if(!token)b.push(band('tok','b-n','<strong>No API token in this browser.</strong> Paste it into Token to connect. '+sh));
 else if(live==='denied')b.push(band('den','b-err','<strong>Token rejected (401).</strong> Paste the current token into Token. '+sh));
 if(live==='lost')b.push(band('lost','b-n','<strong>Event stream lost <span id="lostS"></span> ago.</strong> <span id="lostR"></span> Values shown are stale.'));
+if(live==='busy')b.push(band('busy','b-n','<strong>Event stream refused (busy).</strong> Another console holds the stream or the bridge is low on heap; one live console at a time. <span id="lostR"></span>'));
 if(live==='offline')b.push(band('off','b-n','<strong>Bridge went offline</strong> (restart or shutdown). The page reconnects on its own.'));
 if(token&&live!=='denied'){
 if(st.bus==='stuck_low')b.push(band('sl','b-err','<strong>CEC line stuck low.</strong> No frame can pass until it is released.'));
@@ -446,6 +447,7 @@ const c=ctl=new AbortController();
 try{
 const r=await fetch('/api/events',{headers:{Authorization:'Bearer '+token},signal:c.signal});
 if(r.status===401){denied();return}
+if(r.status===409){setLive('busy');retryAt=now()+delay;tick();await sleep(delay);delay=Math.min(delay*2,15000);continue}
 if(!r.ok)throw 0;
 lastRx=now();
 if(now()-refreshedAt>3000)await refresh().catch(()=>{});

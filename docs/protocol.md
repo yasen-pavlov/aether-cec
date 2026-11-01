@@ -515,7 +515,7 @@ credentials never overwrites the credentials blob. Console `show token` prints i
 | `POST` | `/api/ota` | raw image body, `Content-Length` set, `X-Sha256: <64 hex>` → `202 {"id":"o-1"}`; `400` bad digest/header, `409` busy, `413` too big for the slot |
 
 HTTP errors use `{"ok":false,"reason":"…"}` with the §8 reason vocabulary plus `unauthorized`,
-`not_found`, `too_large`, `busy`. At most 4 concurrent connections; SSE clients count against that.
+`not_found`, `too_large`, `busy`. At most 4 concurrent connections; SSE clients count against that. `/api/events` is additionally admitted only while free heap is ≥ 60 000 bytes (`409 busy` otherwise): a console session costs ≈ 27 KB and main needs ≈ 30 KB of burst headroom, so on the 4 MB WROOM this means one live console at a time.
 The single httpd task streams uploads synchronously: a second upload while one is streaming waits
 in the accept backlog; `409` covers an accepted-but-not-yet-rebooted upload (and a running image
 still pending verification). Other requests, including `/healthz`, can also wait behind an upload.

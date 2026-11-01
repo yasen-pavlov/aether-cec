@@ -656,7 +656,7 @@ but never gates it. OTA keeps its own post-response 500-ms grace.
 SSE requires a native IDF async request because esp-idf-svc unconditionally
 completes responses when its normal handler returns. The exact `/api/events`
 handler authenticates on httpd, calls `httpd_req_async_handler_begin`, and returns
-immediately. At most three 4096-byte-stack SSE tasks own copied requests, leaving
+immediately. At most three 8192-byte-stack SSE tasks own copied requests (admitted only while free heap ≥ `SSE_HEAP_FLOOR` = 60 000 bytes, after boot 140 ran main out of heap with three streams and a bus burst), leaving
 the fourth socket for API/UI use. Each client receives a bounded 16-entry mailbox
 of shared immutable SSE strings; a full mailbox disconnects that client rather
 than blocking main, MQTT or other subscribers. Workers send an initial comment,
