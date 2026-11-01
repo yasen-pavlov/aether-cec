@@ -44,6 +44,7 @@ fn exact_routes_and_error_codes() {
         ("POST", "/api/tx", Route::Tx),
         ("GET", "/api/events", Route::Events),
         ("GET", "/api/log", Route::Log),
+        ("GET", "/api/telemetry", Route::Telemetry),
         ("POST", "/api/ota", Route::Ota),
     ] {
         assert_eq!(route(method, path), Some(expected));
@@ -85,6 +86,7 @@ fn handler_auth_exempts_only_public_get_routes_including_native_sse() {
         ("GET", "/api/status"),
         ("GET", "/api/cfg"),
         ("GET", "/api/log"),
+        ("GET", "/api/telemetry"),
         ("PUT", "/api/cfg"),
         ("POST", "/api/tx"),
         ("POST", "/api/ota"),
@@ -142,7 +144,7 @@ fn ring_evicts_oldest_and_sse_has_exact_framing() {
         sse("bus", r#"{"ev":"rx"}"#).unwrap(),
         "event: bus\ndata: {\"ev\":\"rx\"}\n\n"
     );
-    for suffix in ["status", "ota"] {
+    for suffix in ["status", "ota", "telemetry"] {
         assert!(sse(suffix, "{}").is_some());
     }
     assert!(sse("cfg", "{}").is_none());

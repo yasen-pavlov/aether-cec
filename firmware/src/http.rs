@@ -29,6 +29,8 @@ pub struct Shared {
     pub token: Mutex<String>,
     pub status: Mutex<aether_proto::Status>,
     pub cfg: Mutex<aether_proto::Config>,
+    /// Latest sample; `None` until the first one-second tick after the bus starts.
+    pub telemetry: Mutex<Option<aether_proto::Telemetry>>,
     pub hub: Arc<Hub>,
     pub busy: Arc<AtomicBool>,
     pub reboot: Mutex<Option<Instant>>,
@@ -72,6 +74,7 @@ impl Http {
             token: Mutex::new(token.into()),
             status: Mutex::new(initial_status),
             cfg: Mutex::new(cfg.clone()),
+            telemetry: Mutex::new(None),
             hub,
             busy: Arc::new(AtomicBool::new(false)),
             reboot: Mutex::new(None),
@@ -110,8 +113,14 @@ impl Http {
             _server: server,
         })
     }
-    pub fn snapshot(&self, status: &aether_proto::Status, cfg: &aether_proto::Config) {
+    pub fn snapshot(
+        &self,
+        status: &aether_proto::Status,
+        cfg: &aether_proto::Config,
+        telemetry: &aether_proto::Telemetry,
+    ) {
         *self.shared.status.lock().unwrap() = status.clone();
+        *self.shared.telemetry.lock().unwrap() = Some(telemetry.clone());
         let mut current = self.shared.cfg.lock().unwrap();
         if *current != *cfg {
             *current = cfg.clone();
@@ -203,6 +212,15 @@ fn handle(
             "application/json",
             &serde_json::to_vec(crate::events::logs().lock().unwrap().entries()).unwrap(),
         ),
+        Route::Telemetry => match &*state.telemetry.lock().unwrap() {
+            Some(telemetry) => response(
+                req,
+                200,
+                "application/json",
+                &serde_json::to_vec(telemetry).unwrap(),
+            ),
+            None => error(req, "not_found"),
+        },
         Route::Ota => upload(req, state),
         Route::Command(verb) => dispatch(req, state, Some(verb)),
         Route::Tx => dispatch(req, state, None),

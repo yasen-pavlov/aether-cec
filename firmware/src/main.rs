@@ -338,20 +338,23 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
                 }
             }
             link.report_overrun(&bus);
-            if shutdown.is_none()
-                && link.connected()
-                && cfg.telemetry_s != 0
-                && telemetry_at.elapsed() >= Duration::from_secs(u64::from(cfg.telemetry_s))
-            {
-                let ip = net.ip();
+        }
+        if shutdown.is_none()
+            && cfg.telemetry_s != 0
+            && telemetry_at.elapsed() >= Duration::from_secs(u64::from(cfg.telemetry_s))
+        {
+            let ip = net.ip();
+            let telemetry = bus.telemetry(snapshot(&store, &net, mqtt.as_ref(), &ip));
+            hub.publish("telemetry", &serde_json::to_vec(&telemetry)?);
+            if let Some(link) = mqtt.as_mut().filter(|link| link.connected()) {
                 link.json(Publication {
                     topic: &Topics::telemetry(&node),
                     qos: QoS::AtMostOnce,
                     retain: false,
-                    value: &bus.telemetry(snapshot(&store, &net, Some(link), &ip)),
+                    value: &telemetry,
                 });
-                telemetry_at = Instant::now();
             }
+            telemetry_at = Instant::now();
         }
         // SSE sees events immediately. MQTT retains a bounded startup/offline
         // FIFO, flushed only after this connection's retained status and cfg.
@@ -377,8 +380,9 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         if measured != observed_bus {
             observed_bus = measured;
             let ip = net.ip();
-            let online = bus.online(&cfg, &snapshot(&store, &net, mqtt.as_ref(), &ip));
-            http.snapshot(&online, &cfg);
+            let snap = snapshot(&store, &net, mqtt.as_ref(), &ip);
+            let online = bus.online(&cfg, &snap);
+            http.snapshot(&online, &cfg, &bus.telemetry(snap));
             if let Some(link) = mqtt.as_mut() {
                 link.json(Publication {
                     topic: &Topics::status(&node),
@@ -483,7 +487,8 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         if snapshot_at.elapsed() >= Duration::from_secs(1) {
             let ip = net.ip();
             let snap = snapshot(&store, &net, mqtt.as_ref(), &ip);
-            http.snapshot(&bus.online(&cfg, &snap), &cfg);
+            let online = bus.online(&cfg, &snap);
+            http.snapshot(&online, &cfg, &bus.telemetry(snap));
             snapshot_at = Instant::now();
         }
         if http

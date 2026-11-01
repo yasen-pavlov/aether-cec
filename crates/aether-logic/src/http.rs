@@ -47,6 +47,8 @@ pub enum Route {
     Events,
     /// Read bounded diagnostic history.
     Log,
+    /// Read the latest telemetry sample.
+    Telemetry,
     /// Push firmware.
     Ota,
 }
@@ -65,6 +67,7 @@ pub fn route(method: &str, path: &str) -> Option<Route> {
         ("POST", "/api/tx") => Some(Route::Tx),
         ("GET", "/api/events") => Some(Route::Events),
         ("GET", "/api/log") => Some(Route::Log),
+        ("GET", "/api/telemetry") => Some(Route::Telemetry),
         ("POST", "/api/ota") => Some(Route::Ota),
         _ => None,
     }
@@ -99,7 +102,7 @@ pub fn ota_headers(
 }
 /// Format one SSE message; JSON must be the same single-line serialized payload as MQTT.
 pub fn sse(topic: &str, payload: &str) -> Option<String> {
-    if !matches!(topic, "bus" | "status" | "ota") || payload.contains(['\r', '\n']) {
+    if !matches!(topic, "bus" | "status" | "ota" | "telemetry") || payload.contains(['\r', '\n']) {
         return None;
     }
     Some(format!("event: {topic}\ndata: {payload}\n\n"))

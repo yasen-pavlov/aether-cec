@@ -507,8 +507,9 @@ credentials never overwrites the credentials blob. Console `show token` prints i
 | `PUT` | `/api/cfg` | partial §7 object → `cmd/result`-shaped reply, same validation as `cmd/cfg` |
 | `POST` | `/api/cmd/<verb>` | `ping` \| `state` \| `restart` \| `reset`: same payload and result as §8 |
 | `POST` | `/api/tx` | §4 request → `202`; the outcome is a `bus` event (SSE and MQTT) |
-| `GET` | `/api/events` | `text/event-stream`: every `bus` event, `status` change and `ota` progress, as they are published to MQTT; `event:` = topic suffix, `data:` = payload |
+| `GET` | `/api/events` | `text/event-stream`: every `bus` event, `status` change, `ota` progress and `telemetry` sample, as they are published to MQTT (telemetry is also emitted here while MQTT is down); `event:` = topic suffix, `data:` = payload |
 | `GET` | `/api/log` | last 64 `log` lines as a JSON array, regardless of `cfg.log` |
+| `GET` | `/api/telemetry` | the latest §6 telemetry object, sampled once per second for HTTP; `404 not_found` only during the first second after the bus starts |
 | `POST` | `/api/ota` | raw image body, `Content-Length` set, `X-Sha256: <64 hex>` → `202 {"id":"o-1"}`; `400` bad digest/header, `409` busy, `413` too big for the slot |
 
 HTTP errors use `{"ok":false,"reason":"…"}` with the §8 reason vocabulary plus `unauthorized`,
