@@ -72,6 +72,18 @@ struct Object {
     #[serde(default)]
     dropped: Option<u32>,
     #[serde(default)]
+    level: Option<crate::Level>,
+    #[serde(default)]
+    same_level: Option<bool>,
+    #[serde(default)]
+    dur_us: Option<u32>,
+    #[serde(default)]
+    gap_us: Option<u32>,
+    #[serde(default)]
+    bit: Option<u8>,
+    #[serde(default)]
+    hist: Option<heapless::Vec<u32, 8>>,
+    #[serde(default)]
     bus: Option<BusState>,
     #[serde(default)]
     hpd: Option<bool>,
@@ -138,6 +150,12 @@ impl<'de> Deserialize<'de> for BusEvent {
                 to: object.to,
                 bits: object.bits,
                 dropped: object.dropped,
+                level: object.level,
+                same_level: object.same_level,
+                dur_us: object.dur_us,
+                gap_us: object.gap_us,
+                bit: object.bit,
+                hist: object.hist,
             }),
             EventKind::Line => Ok(Self::Line {
                 seq,

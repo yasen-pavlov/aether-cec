@@ -193,9 +193,29 @@ pub enum Origin { Host(RequestId), Local { reply_to_seq: u32 } }
 pub enum BusEvent {
     Rx { seq: u32, t_us: u64, frame: Frame, ack: bool },
     Tx { seq: u32, t_us: u64, origin: Origin, frame: Frame, outcome: TxOutcome },
-    Err { seq: u32, t_us: u64, kind: RxError, from: Option<u8>, to: Option<u8>, bits: u8 },
+    Err { seq: u32, t_us: u64, kind: RxError, from: Option<u8>, to: Option<u8>, bits: u8, detail: rx::ErrorDetail },
     Line { seq: u32, t_us: u64, stuck_low: bool },
     LaAllocated { seq: u32, t_us: u64, la: u8 },      // after polling; 15 if none free
+}
+
+// rx.rs — edge-level evidence attached to every decoder error (phase 3.1 diagnostics;
+// all fields are facts the decoder already had in hand, no new allocation):
+pub struct ErrorDetail {
+    pub level: Option<Level>,   // level reported by the failing edge; None for poll() timeouts
+    pub same_level: bool,       // the failing edge reported the previous edge's level (glitch / merged edge)
+    pub duration_us: u32,       // failed fall→fall period, low-pulse width, or now−last fall for timeouts; saturated to u32
+    pub gap_us: u32,            // interval since the previous edge of any level (0 for timeouts); saturated to u32
+    // Bit whose low phase is in progress or whose falling edge is due:
+    // 0–7 data, 8 EOM, 9 ACK; None in Start. For level: Low failures and
+    // high-phase timeouts the failed interval belongs to bit−1
+    // (bit: 0 means the previous block's ACK).
+    pub bit: Option<u8>,
+    // Up to eight preceding edge intervals, oldest first; resets at the start
+    // fall. history[0] may be the preceding idle gap, up to u32::MAX.
+    // The failing interval appears only in gap_us.
+    pub history: heapless::Vec<u32, 8>,
+    // Same-level and out-of-order failures report duration_us = t − last fall,
+    // saturated to u32, without comparing a timing window.
 }
 
 pub struct Bridge { .. }

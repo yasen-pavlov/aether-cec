@@ -252,7 +252,7 @@ result expiry stays valid.
 ### 5.3 `err` — receive error / overrun
 
 ```json
-{"ev":"err","seq":819,"t_us":48700100,"kind":"start_bit","from":null,"to":null,"bits":3}
+{"ev":"err","seq":819,"t_us":48700100,"kind":"start_bit","from":null,"to":null,"bits":0}
 {"ev":"err","seq":820,"t_us":48711000,"kind":"overrun","dropped":4}
 ```
 
@@ -263,6 +263,30 @@ error, **not** the 100 ms bus-health threshold), `overrun` (device ring or MQTT 
 per frame; other events are not rate-limited beyond the outbox limit. The host counts errors for
 the "bus degraded" warning. A continuously low line past 100 ms separately emits `line` with
 `bus:"stuck_low"` once; recovery emits `bus:"ok"` once.
+
+Decoder errors (`start_bit`, `bit_timing`, `eom_missing`, `line_low`) additionally carry
+edge-level evidence (added 2026-11-01 after the live bench showed ~15 % `bit_timing` losses on
+frames from some initiators; all keys optional, older payloads omit them):
+
+```json
+{"ev":"err","seq":826,"t_us":48900100,"kind":"bit_timing","from":4,"to":0,"bits":40,
+ "level":"low","same_level":false,"dur_us":1900,"gap_us":1170,"bit":8,
+ "hist":[1790,1500,900,620,1780,1510,890,730]}
+```
+
+This falling edge ends a 1 900 µs data period (below the 1 950 µs minimum):
+the last accepted low pulse in `hist` was 730 µs, followed by the failing
+1 170 µs high interval. For a high-level, non-same-level failure,
+`dur_us == gap_us` because the previous edge was the last fall.
+
+| Key | Meaning |
+|---|---|
+| `level` | `high` \| `low`: level reported by the edge that failed; absent for timeouts detected without an edge |
+| `same_level` | the failing edge reported the same level as the previous edge (glitch pair or merged edge) |
+| `dur_us` | the value that missed its window: fall→fall period on a falling edge, low-pulse width on a rising edge, time since the last fall for a timeout; saturated to u32. Same-level and out-of-order failures instead report `t − last fall` (saturating at 0 and u32::MAX); no timing window was compared |
+| `gap_us` | µs since the previous edge of any level, saturated to u32 (0 for timeouts or out-of-order edges) |
+| `bit` | the bit whose low phase is in progress or whose falling edge is due: 0–7 data, 8 EOM, 9 ACK; absent during the start bit. For `level:"low"` failures and high-phase timeouts the failed interval belongs to `bit−1` (`bit:0` ⇒ previous block's ACK) |
+| `hist` | up to eight intervals (µs) between preceding edges, oldest first; resets at the start fall. `hist[0]` may be the idle gap before the frame (up to u32::MAX). The failing interval appears only in `gap_us` |
 
 ### 5.4 `line` — bus line state changes
 

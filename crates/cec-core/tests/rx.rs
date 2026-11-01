@@ -422,3 +422,226 @@ fn rx_short_low_is_frame_error_not_stuck_and_long_low_recovers_once() {
     ));
     assert_eq!(decoder.poll(at + u64::from(timing::SIGNAL_FREE_NEW)), None);
 }
+
+fn detail(event: RxEvent) -> cec_core::rx::ErrorDetail {
+    let RxEvent::Error { detail, .. } = event else {
+        panic!("expected a decoder error, got {event:?}");
+    };
+    detail
+}
+
+fn edge_intervals(edges: &[Edge]) -> Vec<u32> {
+    edges
+        .windows(2)
+        .map(|pair| u32::try_from(pair[1].t_us.saturating_sub(pair[0].t_us)).unwrap_or(u32::MAX))
+        .collect()
+}
+
+#[test]
+fn rx_same_level_glitch_preserves_spacing_and_preceding_history() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let mut edges = render(&frame, true, 0, None);
+    let mut decoder = Decoder::default();
+    for &edge in &edges[..4] {
+        assert_eq!(decoder.edge(edge), None);
+    }
+    edges.insert(
+        4,
+        Edge {
+            level: edges[3].level,
+            t_us: edges[3].t_us + 7,
+        },
+    );
+    let evidence = detail(decoder.edge(edges[4]).unwrap());
+    assert_eq!(evidence.level, Some(Level::High));
+    assert!(evidence.same_level);
+    assert_eq!(evidence.gap_us, edge_intervals(&edges[3..=4])[0]);
+    assert_eq!(
+        evidence.duration_us,
+        edge_intervals(&edges[2..=4]).iter().sum::<u32>()
+    );
+    assert_eq!(evidence.bit, Some(1));
+    assert_eq!(evidence.history.as_slice(), edge_intervals(&edges[..4]));
+}
+
+#[test]
+fn rx_short_data_period_reports_current_bit_and_history_before_failing_edge() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let mut edges = render(&frame, true, 0, None);
+    let fall = 2 + 5 * 2;
+    edges[fall].t_us = edges[fall - 2].t_us + u64::from(timing::DATA_TOTAL.min - 50);
+    let evidence = detail(decode(&edges[..=fall], AckSet::default()).remove(0));
+    assert_eq!(evidence.level, Some(Level::Low));
+    assert!(!evidence.same_level);
+    assert_eq!(
+        evidence.duration_us,
+        edge_intervals(&edges[fall - 2..=fall]).iter().sum::<u32>()
+    );
+    assert_eq!(evidence.bit, Some(5));
+    assert_eq!(
+        evidence.history.as_slice(),
+        edge_intervals(&edges[fall - 9..fall])
+    );
+    assert_eq!(evidence.gap_us, edge_intervals(&edges[fall - 1..=fall])[0]);
+}
+
+#[test]
+fn rx_long_ack_low_reports_ack_position_and_exact_width() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let mut edges = render(&frame, true, 0, None);
+    let rise = edges.len() - 1;
+    edges[rise].t_us = edges[rise - 1].t_us + u64::from(timing::DATA_LOW_0.max + 50);
+    let evidence = detail(decode(&edges, AckSet::default()).remove(0));
+    assert_eq!(evidence.level, Some(Level::High));
+    assert_eq!(evidence.bit, Some(9));
+    let width = edge_intervals(&edges[rise - 1..=rise])[0];
+    assert_eq!(evidence.duration_us, width);
+    assert_eq!(evidence.gap_us, width);
+    assert_eq!(
+        evidence.history.as_slice(),
+        edge_intervals(&edges[rise - 9..rise])
+    );
+}
+
+#[test]
+fn rx_eom_and_ack_period_failures_report_the_next_due_bit() {
+    let frame = Frame::new(4, 0, &[0x8F]).unwrap();
+    for (fall, bit) in [(20, 9), (22, 0)] {
+        let mut edges = render(&frame, true, 0, None);
+        edges[fall].t_us = edges[fall - 2].t_us + u64::from(timing::DATA_TOTAL.min - 50);
+        let events = decode(&edges[..=fall], AckSet::default());
+        let [
+            event @ RxEvent::Error {
+                kind: RxError::BitTiming,
+                bits: 8,
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected one block-boundary timing error, got {events:?}");
+        };
+        let evidence = detail(event.clone());
+        assert_eq!(evidence.level, Some(Level::Low));
+        assert!(!evidence.same_level);
+        assert_eq!(evidence.bit, Some(bit));
+        assert_eq!(
+            evidence.duration_us,
+            edge_intervals(&edges[fall - 2..=fall]).iter().sum::<u32>()
+        );
+        assert_eq!(evidence.gap_us, edge_intervals(&edges[fall - 1..=fall])[0]);
+        assert_eq!(
+            evidence.history.as_slice(),
+            edge_intervals(&edges[fall - 9..fall])
+        );
+    }
+}
+
+#[test]
+fn rx_poll_timeouts_have_no_edge_and_keep_elapsed_duration() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let edges = render(&frame, true, 0, None);
+    for (count, limit, bit) in [
+        (1, timing::START_TOTAL.max, None),
+        (2, timing::START_TOTAL.max, None),
+        (3, timing::START_TOTAL.max, Some(0)),
+        (4, timing::DATA_TOTAL.max, Some(1)),
+    ] {
+        let mut decoder = Decoder::default();
+        for &edge in &edges[..count] {
+            assert_eq!(decoder.edge(edge), None);
+        }
+        let fall_index = (count - 1) & !1;
+        let now = edges[fall_index].t_us + u64::from(limit) + 1;
+        let timeout = Edge {
+            level: edges[count - 1].level,
+            t_us: now,
+        };
+        let evidence = detail(decoder.poll(now).unwrap());
+        assert_eq!(evidence.level, None);
+        assert!(!evidence.same_level);
+        assert_eq!(evidence.gap_us, 0);
+        assert_eq!(
+            evidence.duration_us,
+            edge_intervals(&[edges[fall_index], timeout])[0]
+        );
+        assert_eq!(evidence.history.as_slice(), edge_intervals(&edges[..count]));
+        assert_eq!(evidence.bit, bit);
+    }
+}
+
+#[test]
+fn rx_history_resets_on_start_and_includes_saturated_preceding_idle_gap() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let mut decoder = Decoder::default();
+    let first = render(&frame, true, 0, None);
+    for &edge in &first {
+        decoder.edge(edge);
+    }
+    let start = first.last().unwrap().t_us + u64::from(u32::MAX) + 1;
+    let mut next = render(&frame, true, start, None);
+    next[1].t_us = start + u64::from(timing::START_LOW.max) + 1;
+    assert_eq!(decoder.edge(next[0]), None);
+    let evidence = detail(decoder.edge(next[1]).unwrap());
+    assert_eq!(
+        evidence.history.as_slice(),
+        edge_intervals(&[*first.last().unwrap(), next[0]])
+    );
+    assert_eq!(evidence.bit, None);
+    assert_eq!(evidence.duration_us, edge_intervals(&next[..2])[0]);
+    assert_eq!(evidence.level, Some(Level::High));
+}
+
+#[test]
+fn rx_out_of_order_edge_and_large_timeout_saturate_without_wrapping() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let edges = render(&frame, true, 0, None);
+    let mut decoder = Decoder::default();
+    for &edge in &edges[..4] {
+        decoder.edge(edge);
+    }
+    let out_of_order = Edge {
+        level: Level::Low,
+        t_us: 0,
+    };
+    let evidence = detail(decoder.edge(out_of_order).unwrap());
+    assert!(!evidence.same_level);
+    assert_eq!(
+        evidence.gap_us,
+        edge_intervals(&[edges[3], out_of_order])[0]
+    );
+    assert_eq!(
+        evidence.duration_us,
+        edge_intervals(&[edges[2], out_of_order])[0]
+    );
+    assert_eq!(evidence.history.as_slice(), edge_intervals(&edges[..4]));
+    let mut decoder = Decoder::default();
+    decoder.edge(edges[0]);
+    let timeout = Edge {
+        level: edges[0].level,
+        t_us: u64::MAX,
+    };
+    let evidence = detail(decoder.poll(timeout.t_us).unwrap());
+    assert_eq!(
+        evidence.duration_us,
+        edge_intervals(&[edges[0], timeout])[0]
+    );
+    assert_eq!(evidence.gap_us, 0);
+    assert_eq!(evidence.history.as_slice(), edge_intervals(&edges[..1]));
+}
+
+#[test]
+fn rx_bridge_preserves_diagnostic_evidence_unchanged() {
+    let frame = Frame::new(4, 0, &[]).unwrap();
+    let edges = render(&frame, true, 0, None);
+    let mut decoder = Decoder::default();
+    decoder.edge(edges[0]);
+    let event = decoder
+        .poll(u64::from(timing::START_TOTAL.max) + 1)
+        .unwrap();
+    let expected = detail(event.clone());
+    let mut bridge = Bridge::new(Config::default(), 0);
+    let Some(cec_core::bridge::BusEvent::Err { detail, .. }) = bridge.on_rx(event, 0) else {
+        panic!("expected bridge error");
+    };
+    assert_eq!(detail, expected);
+}

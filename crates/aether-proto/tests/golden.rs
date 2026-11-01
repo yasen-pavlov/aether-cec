@@ -93,7 +93,7 @@ fn every_documented_json_example_round_trips() {
             block.push('\n');
         }
     }
-    assert_eq!(count, 27, "all concrete fenced examples in sections 3–9");
+    assert_eq!(count, 28, "all concrete fenced examples in sections 3–9");
 }
 
 #[test]
@@ -489,4 +489,34 @@ fn last_crash_is_optional_bounded_and_round_trips_escaped_text() {
     let offline: Status = serde_json::from_str(LWT_PAYLOAD).unwrap();
     assert!(offline.last_crash.is_none());
     assert_eq!(serde_json::to_string(&offline).unwrap(), LWT_PAYLOAD);
+}
+
+#[test]
+fn decoder_error_evidence_and_overrun_have_exact_golden_json() {
+    for text in [
+        r#"{"ev":"err","seq":826,"t_us":48900100,"kind":"bit_timing","from":4,"to":0,"bits":40,"level":"low","same_level":false,"dur_us":1900,"gap_us":1170,"bit":8,"hist":[1790,1500,900,620,1780,1510,890,730]}"#,
+        r#"{"ev":"err","seq":820,"t_us":48711000,"kind":"overrun","dropped":4}"#,
+        r#"{"ev":"err","seq":819,"t_us":48700100,"kind":"start_bit","bits":0}"#,
+        r#"{"ev":"err","seq":827,"t_us":48910000,"kind":"line_low","same_level":false,"dur_us":4951,"gap_us":0,"hist":[]}"#,
+        r#"{"ev":"err","seq":828,"t_us":48920000,"kind":"bit_timing","bits":1,"level":"low","same_level":true,"dur_us":7,"gap_us":7,"bit":1,"hist":[3700,800,600,1800]}"#,
+    ] {
+        let event: BusEvent = serde_json::from_str(text).unwrap();
+        assert_eq!(serde_json::to_string(&event).unwrap(), text);
+        round_trip::<BusEvent>(text);
+        let mut extended: Value = serde_json::from_str(text).unwrap();
+        extended["future"] = json!({"deep": [null, {"new": true}]});
+        assert_eq!(serde_json::from_value::<BusEvent>(extended).unwrap(), event);
+    }
+}
+
+#[test]
+fn decoder_error_history_is_bounded_and_levels_are_typed() {
+    for extra in [
+        r#""hist":[1,2,3,4,5,6,7,8,9]"#,
+        r#""hist":[4294967296]"#,
+        r#""level":"floating""#,
+    ] {
+        let text = format!(r#"{{"ev":"err","seq":1,"t_us":0,"kind":"bit_timing",{extra}}}"#);
+        assert!(serde_json::from_str::<BusEvent>(&text).is_err(), "{text}");
+    }
 }

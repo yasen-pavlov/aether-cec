@@ -155,6 +155,12 @@ impl Losses {
             to: None,
             bits: None,
             dropped: Some(self.0),
+            level: None,
+            same_level: None,
+            dur_us: None,
+            gap_us: None,
+            bit: None,
+            hist: None,
         };
         if send(event) {
             bridge.next_seq();

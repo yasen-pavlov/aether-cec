@@ -199,6 +199,8 @@ pub enum BusEvent {
         to: Option<u8>,
         /// Number of received data bits.
         bits: u8,
+        /// Electrical and timing evidence at failure.
+        detail: crate::rx::ErrorDetail,
     },
     /// Bus health changed after a sustained low or recovery.
     Line {
@@ -390,6 +392,7 @@ impl Bridge {
                 from,
                 to,
                 bits,
+                detail,
                 ..
             } => Some(BusEvent::Err {
                 seq: self.next_seq(),
@@ -398,6 +401,7 @@ impl Bridge {
                 from,
                 to,
                 bits,
+                detail,
             }),
             RxEvent::Frame {
                 frame,

@@ -281,6 +281,16 @@ pub enum ErrorKind {
     Overrun,
 }
 
+/// Electrical level reported by a decoder error's failing edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    /// Bus asserted.
+    Low,
+    /// Bus released.
+    High,
+}
+
 /// One object from the single ordered bus stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "ev", rename_all = "snake_case")]
@@ -352,6 +362,24 @@ pub enum BusEvent {
         /// Events lost to overrun.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dropped: Option<u32>,
+        /// Failing edge's level; absent for poll timeouts and overruns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<Level>,
+        /// Whether the failing edge repeated the previous edge's level.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        same_level: Option<bool>,
+        /// Failed pulse/period or timeout in microseconds, saturated to `u32`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dur_us: Option<u32>,
+        /// Time since the previous edge; zero for poll timeouts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gap_us: Option<u32>,
+        /// Block position: data 0–7, EOM 8, ACK 9; absent during start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bit: Option<u8>,
+        /// Up to eight preceding inter-edge intervals, oldest first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hist: Option<heapless::Vec<u32, 8>>,
     },
     /// Electrical state change or completed logical-address allocation.
     Line {

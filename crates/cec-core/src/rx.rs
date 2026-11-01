@@ -59,6 +59,30 @@ pub enum RxError {
     /// The line stayed asserted beyond the maximum start interval.
     LineLow,
 }
+/// Edge-level evidence retained when decoding a frame fails.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ErrorDetail {
+    /// Failing edge's level; absent for timeouts detected by `Decoder::poll`.
+    pub level: Option<Level>,
+    /// Whether the failing edge repeated the previous edge's level.
+    pub same_level: bool,
+    /// Failed fall→fall period, low-pulse width, or timeout since the last fall,
+    /// saturated to `u32`. Same-level and out-of-order failures instead report
+    /// `t − last fall` without comparing a timing window.
+    pub duration_us: u32,
+    /// Time since the previous edge, saturated to `u32`; zero for timeouts.
+    pub gap_us: u32,
+    /// Bit whose low phase is in progress or whose falling edge is due:
+    /// data 0–7, EOM 8, ACK 9; absent during start. For `level: Low` failures
+    /// and high-phase timeouts the failed interval belongs to `bit − 1`
+    /// (`bit: 0` means the previous block's ACK).
+    pub bit: Option<u8>,
+    /// Up to eight intervals before the failing edge, oldest first.
+    ///
+    /// Resets at the start fall; `history[0]` may be the preceding idle gap,
+    /// saturated to `u32::MAX`. The failing interval appears only in `gap_us`.
+    pub history: heapless::Vec<u32, 8>,
+}
 /// An observation produced by the decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RxEvent {
@@ -83,6 +107,8 @@ pub enum RxEvent {
         to: Option<u8>,
         /// Number of received data bits, excluding EOM and ACK.
         bits: u8,
+        /// Electrical and timing evidence at failure.
+        detail: ErrorDetail,
     },
     /// Bus health changed after a sustained low or its recovery.
     Line {
@@ -112,6 +138,8 @@ pub struct Decoder {
     level: Level,
     last_edge_us: u64,
     quiet_since: u64,
+    edge_seen: bool,
+    history: heapless::Deque<u32, 8>,
     transmitting: bool,
     suppress_error: bool,
     stuck_low: bool,
@@ -158,21 +186,35 @@ impl Decoder {
             self.quiet_since
         }
     }
-    fn error(&mut self, kind: RxError) -> Option<RxEvent> {
+    fn error(&mut self, kind: RxError, edge: Option<Edge>, duration: u64) -> Option<RxEvent> {
+        if self.suppress_error {
+            self.state = State::Idle;
+            return None;
+        }
         let event = RxEvent::Error {
             kind,
             start_us: self.start,
             from: (self.bits >= 4).then_some(self.frame.from),
             to: (self.bits >= 8).then_some(self.frame.to),
             bits: self.bits,
+            detail: ErrorDetail {
+                level: edge.map(|edge| edge.level),
+                same_level: edge.is_some_and(|edge| edge.level == self.level),
+                duration_us: saturating_us(duration),
+                gap_us: edge.map_or(0, |edge| {
+                    saturating_us(edge.t_us.saturating_sub(self.last_edge_us))
+                }),
+                bit: (self.state == State::Data).then_some(self.bit),
+                history: self.history.iter().copied().collect(),
+            },
         };
         self.state = State::Idle;
-        let emit = !self.suppress_error;
         self.suppress_error = true;
-        emit.then_some(event)
+        Some(event)
     }
     fn begin(&mut self, now: u64) {
         self.state = State::Start;
+        self.history.clear();
         self.start = now;
         self.fall = now;
         self.frame = Frame::default();
@@ -187,14 +229,31 @@ impl Decoder {
     pub fn edge(&mut self, edge: Edge) -> Option<RxEvent> {
         if edge.t_us < self.last_edge_us || edge.level == self.level {
             return if self.busy() {
-                self.error(RxError::BitTiming)
+                self.error(
+                    RxError::BitTiming,
+                    Some(edge),
+                    edge.t_us.saturating_sub(self.fall),
+                )
             } else {
                 None
             };
         }
+        self.quiet_since = self.quiet_since.max(edge.t_us);
+        let event = self.decode_edge(edge);
+        if self.edge_seen {
+            if self.history.is_full() {
+                self.history.pop_front();
+            }
+            let _ = self
+                .history
+                .push_back(saturating_us(edge.t_us - self.last_edge_us));
+        }
+        self.edge_seen = true;
         self.level = edge.level;
         self.last_edge_us = edge.t_us;
-        self.quiet_since = self.quiet_since.max(edge.t_us);
+        event
+    }
+    fn decode_edge(&mut self, edge: Edge) -> Option<RxEvent> {
         if self.stuck_low && edge.level == Level::High {
             self.stuck_low = false;
             self.state = State::Idle;
@@ -214,7 +273,7 @@ impl Decoder {
                 (timing::DATA_TOTAL, RxError::BitTiming)
             };
             if !window.contains(duration) {
-                return self.error(error);
+                return self.error(error, Some(edge), duration);
             }
             self.state = State::Data;
             self.fall = edge.t_us;
@@ -230,14 +289,14 @@ impl Decoder {
                 self.state = State::Idle;
                 return None;
             }
-            return self.error(RxError::StartBit);
+            return self.error(RxError::StartBit, Some(edge), duration);
         }
         let one = timing::DATA_LOW_1.contains(duration);
         let valid_ack = self.bit == 9
             && duration >= u64::from(timing::DATA_LOW_1.min)
             && duration <= u64::from(timing::DATA_LOW_0.max);
         if !one && !timing::DATA_LOW_0.contains(duration) && !valid_ack {
-            return self.error(RxError::BitTiming);
+            return self.error(RxError::BitTiming, Some(edge), duration);
         }
         match self.bit {
             0..=7 => {
@@ -265,12 +324,12 @@ impl Decoder {
                     None
                 }
             }
-            _ => self.finish_block(duration),
+            _ => self.finish_block(duration, edge),
         }
     }
-    fn finish_block(&mut self, low: u64) -> Option<RxEvent> {
+    fn finish_block(&mut self, low: u64, edge: Edge) -> Option<RxEvent> {
         if self.blocks != 0 && self.frame.data.push(self.byte).is_err() {
-            return self.error(RxError::EomMissing);
+            return self.error(RxError::EomMissing, Some(edge), low);
         }
         self.blocks += 1;
         let sampled_low = low > u64::from(timing::SAMPLE_AT);
@@ -284,7 +343,7 @@ impl Decoder {
             return Some(self.complete_frame());
         }
         if usize::from(self.blocks) == crate::MAX_DATA + 1 {
-            return self.error(RxError::EomMissing);
+            return self.error(RxError::EomMissing, Some(edge), low);
         }
         self.bit = 0;
         self.byte = 0;
@@ -304,7 +363,9 @@ impl Decoder {
         if self.level == Level::Low {
             if self.busy() && now_us.saturating_sub(self.fall) > u64::from(timing::START_TOTAL.max)
             {
-                if let Some(event) = self.error(RxError::LineLow) {
+                if let Some(event) =
+                    self.error(RxError::LineLow, None, now_us.saturating_sub(self.fall))
+                {
                     return Some(event);
                 }
             }
@@ -324,9 +385,13 @@ impl Decoder {
                 if self.block_complete && !self.last_ack && !self.frame.is_broadcast() {
                     return Some(self.complete_frame());
                 }
-                return self.error(error);
+                return self.error(error, None, now_us.saturating_sub(self.fall));
             }
         }
         None
     }
+}
+
+fn saturating_us(duration: u64) -> u32 {
+    u32::try_from(duration).unwrap_or(u32::MAX)
 }

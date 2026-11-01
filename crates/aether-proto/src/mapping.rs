@@ -57,6 +57,7 @@ impl From<bridge::BusEvent> for BusEvent {
                 from,
                 to,
                 bits,
+                detail,
             } => {
                 let kind = match kind {
                     RxError::StartBit => ErrorKind::StartBit,
@@ -72,6 +73,12 @@ impl From<bridge::BusEvent> for BusEvent {
                     to,
                     bits: Some(bits),
                     dropped: None,
+                    level: detail.level.map(Into::into),
+                    same_level: Some(detail.same_level),
+                    dur_us: Some(detail.duration_us),
+                    gap_us: Some(detail.gap_us),
+                    bit: detail.bit,
+                    hist: Some(detail.history),
                 }
             }
             bridge::BusEvent::Line {
@@ -96,6 +103,15 @@ impl From<bridge::BusEvent> for BusEvent {
                 hpd: None,
                 la: Some(la),
             },
+        }
+    }
+}
+
+impl From<cec_core::Level> for crate::Level {
+    fn from(level: cec_core::Level) -> Self {
+        match level {
+            cec_core::Level::Low => Self::Low,
+            cec_core::Level::High => Self::High,
         }
     }
 }

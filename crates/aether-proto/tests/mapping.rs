@@ -135,6 +135,14 @@ fn decoding_errors_preserve_known_header_and_partial_bit_count() {
             from: Some(1),
             to: Some(0),
             bits: 17,
+            detail: cec_core::rx::ErrorDetail {
+                level: Some(cec_core::Level::Low),
+                same_level: true,
+                duration_us: 1900,
+                gap_us: 7,
+                bit: Some(1),
+                history: [600, 1800].into_iter().collect(),
+            },
         }
         .into();
         assert_eq!(
@@ -146,7 +154,13 @@ fn decoding_errors_preserve_known_header_and_partial_bit_count() {
                 from: Some(1),
                 to: Some(0),
                 bits: Some(17),
-                dropped: None
+                dropped: None,
+                level: Some(aether_proto::Level::Low),
+                same_level: Some(true),
+                dur_us: Some(1900),
+                gap_us: Some(7),
+                bit: Some(1),
+                hist: Some([600, 1800].into_iter().collect()),
             }
         );
     }

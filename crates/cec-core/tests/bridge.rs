@@ -311,7 +311,8 @@ fn bridge_seq_monotonic_across_rx_err_host_local_and_allocation() {
                 from: None,
                 to: None,
                 bits: 0,
-                start_us: 0
+                start_us: 0,
+                detail: cec_core::rx::ErrorDetail::default(),
             },
             12
         ),
