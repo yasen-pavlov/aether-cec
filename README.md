@@ -153,6 +153,19 @@ these crashes. Once the table is installed, subsequent normal OTA updates can
 capture/recover dumps. The recovering image must also include this code; an
 older rollback image will not publish `last_crash`.
 
+Independently of the dump, `firmware/src/bootstage.rs` keeps a boot-progress
+record in RTC noinit memory (survives panic/watchdog resets, not power-on):
+checkpoints `pre_main` (global constructor, before IDF secondary init), `main`, `console`, `store`, `net`, `mqtt`, `http`, `bus`, and
+`loop` (re-marked every main-loop turn) with the uptime they were reached at.
+After a `panic`, `int_wdt` or `task_wdt` boot the previous boot's last
+checkpoint is logged as `last_stage <stage> t_ms=<n>` and retained as optional
+`status.last_stage`; any other boot logs it as `prev_boot_stage`. This covers
+crashes that happen before IDF's core dump writer is initialised, which leave
+no dump at all (the writer then prints "flash config is corrupted"). An
+`pre_main` after a crash reset means the crash happened in IDF startup before
+`main`; the constructor re-claims the record, so it always describes the
+immediately preceding boot.
+
 There is deliberately no RTC-memory fallback based on an unsupported panic hook:
 IDF 5.4.2's [port panic handler](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/port/panic_handler.c#L263-L267)
 calls the [system handler directly](https://github.com/espressif/esp-idf/blob/v5.4.2/components/esp_system/panic.c#L287-L419),

@@ -445,6 +445,16 @@ level and erases the consumed dump with `esp_core_dump_image_erase()`. A valid
 dump on another reset cause is cleared without attributing it to that boot.
 Read/check/erase errors are static application codes with numeric IDF errors;
 an absent partition emits `coredump_unavailable_usb_table_required`.
+`esp_core_dump_image_check()` returning `ESP_ERR_INVALID_SIZE` is the erased
+partition's `0xFFFFFFFF` length word and is silent, not a check failure.
+`bootstage.rs` complements the dump with a boot-progress record in `.rtc_noinit`
+(magic, stage, `t_ms`, checksum; a `.ctors` global constructor copies it out
+and claims it as `pre_main` before IDF secondary init, `main` formats it once
+the logger exists, `mark()` is called at each startup checkpoint and every
+main-loop turn). After a panic/WDT reset the previous boot's last checkpoint is
+kept as `Status.last_stage: Option<LastStage>` (`heapless::String<32>`,
+`"<stage> t_ms=<n>"`) for the whole boot; it is the only crash evidence when the
+panic happens before IDF's `init_coredump` has run.
 `Status.last_crash: Option<LastCrash>` is additive, where
 `LastCrash = heapless::String<120>`; `status::Snapshot.last_crash` borrows it.
 The summary stays in RAM for all status/HTTP publications that boot, independent

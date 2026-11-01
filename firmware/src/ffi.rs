@@ -189,7 +189,12 @@ fn read_last_crash() -> Option<aether_proto::LastCrash> {
     }
     let checked = unsafe { sys::esp_core_dump_image_check() };
     if checked != sys::ESP_OK {
-        if checked != sys::ESP_ERR_NOT_FOUND {
+        // IDF returns INVALID_SIZE both for the erased partition's 0xFFFFFFFF
+        // length word (no dump was written) and for an out-of-range length
+        // (damaged dump); only the former is silent.
+        let blank =
+            checked == sys::ESP_ERR_INVALID_SIZE && coredump_length(partition) == Some(u32::MAX);
+        if !blank && checked != sys::ESP_ERR_NOT_FOUND {
             log::warn!("coredump_check_failed code={checked}");
         }
         return None;
@@ -224,6 +229,19 @@ fn read_last_crash() -> Option<aether_proto::LastCrash> {
     // The flash dump is one-shot; a later crash may replace it.
     clear_core_dump();
     Some(text)
+}
+
+fn coredump_length(partition: *const sys::esp_partition_t) -> Option<u32> {
+    let mut length = 0u32;
+    let result = unsafe {
+        sys::esp_partition_read(
+            partition,
+            0,
+            (&raw mut length).cast(),
+            core::mem::size_of::<u32>(),
+        )
+    };
+    (result == sys::ESP_OK).then_some(length)
 }
 
 fn clear_core_dump() {

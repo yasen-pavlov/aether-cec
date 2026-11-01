@@ -61,6 +61,8 @@ pub struct Snapshot<'a> {
     pub reset_reason: aether_proto::ResetReason,
     /// Recovered exception summary, retained for the entire current boot.
     pub last_crash: Option<&'a aether_proto::LastCrash>,
+    /// Previous boot's last startup checkpoint, retained for the entire current boot.
+    pub last_stage: Option<&'a aether_proto::LastStage>,
     /// Monotonic microseconds.
     pub t_us: u64,
     /// Current STA IP.
@@ -93,6 +95,7 @@ pub fn online(cfg: &Config, snapshot: &Snapshot<'_>) -> Status {
         boot: Some(snapshot.boot),
         reset_reason: Some(snapshot.reset_reason),
         last_crash: snapshot.last_crash.cloned(),
+        last_stage: snapshot.last_stage.cloned(),
         t_us: Some(snapshot.t_us),
         la: snapshot.bus.la,
         pa: match cfg.pa {

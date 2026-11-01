@@ -1,4 +1,5 @@
 //! Network/config owner; the dedicated CEC task owns the physical bus.
+mod bootstage;
 mod cec;
 mod config;
 mod console;
@@ -37,11 +38,15 @@ fn main() {
     let mut health = BootHealth::new();
     events::initialize();
     ffi::private_logging();
+    bootstage::begin();
     let _ = ffi::last_crash();
     // Keep the receiver outside run(): an error must never terminate the console.
     let console = loop {
         match console::spawn() {
-            Ok(console) => break console,
+            Ok(console) => {
+                bootstage::mark(bootstage::Stage::Console);
+                break console;
+            }
             Err(_) => log::error!("console_init_failed"),
         }
         health.poll(false, None, |_| false);
@@ -86,6 +91,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     health.load(&store)?;
     let mut cfg = store.load_config()?;
     let mut secrets = secrets::Secrets::load(&store)?;
+    bootstage::mark(bootstage::Stage::Store);
     let node = cfg.node.clone(); // MQTT identity changes only on restart.
     let peripherals = Peripherals::take()?;
     let mut net = net::Net::new(
@@ -93,6 +99,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         EspSystemEventLoop::take()?,
         secrets.wifi.as_ref(),
     )?;
+    bootstage::mark(bootstage::Stage::Net);
     let mut mqtt = if secrets.wifi.is_some() {
         secrets
             .mqtt
@@ -102,6 +109,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     } else {
         None
     };
+    bootstage::mark(bootstage::Stage::Mqtt);
     let hub = std::sync::Arc::new(events::Hub::default());
     if let Some(link) = mqtt.as_mut() {
         link.hub = hub.clone();
@@ -117,9 +125,11 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
         storage: store.ota.clone(),
         hub: hub.clone(),
     })?;
+    bootstage::mark(bootstage::Stage::Http);
     // Start the producer only after network/HTTP constructors return. From here
     // main drains bus events every turn, even without credentials or MQTT.
     let bus = cec::Link::new(&cfg, http.shared.busy.clone())?;
+    bootstage::mark(bootstage::Stage::Bus);
     let mut backlog = aether_logic::bus::EventBacklog::default();
     let mut telemetry_at = Instant::now();
     let mut status_retry_at = Instant::now();
@@ -129,6 +139,7 @@ fn run(console: &Receiver<ConsoleCommand>, health: &mut BootHealth) -> Result<()
     let mut observed_bus = (None, None);
     let mut stacks_reported = false;
     loop {
+        bootstage::mark(bootstage::Stage::Loop);
         net.poll();
         if !stacks_reported && ffi::now_us() >= 60_000_000 {
             ffi::log_stack_watermarks();
@@ -508,6 +519,7 @@ fn snapshot<'a>(
         boot: store.boot,
         reset_reason: ffi::reset_reason(),
         last_crash: ffi::last_crash(),
+        last_stage: bootstage::last_stage(),
         t_us: ffi::now_us(),
         ip,
         rssi: net.rssi(),

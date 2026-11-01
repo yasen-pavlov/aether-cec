@@ -234,6 +234,7 @@ fn status_and_telemetry_exact_fields() {
         boot: 3,
         reset_reason: aether_proto::ResetReason::Software,
         last_crash: None,
+        last_stage: None,
         t_us: 123,
         ip: "192.0.2.2",
         rssi: -58,
@@ -255,6 +256,14 @@ fn status_and_telemetry_exact_fields() {
     assert_eq!(crashed.last_crash.as_ref(), Some(&crash));
     assert_eq!(
         serde_json::to_value(crashed).unwrap()["last_crash"],
+        "28 pc=40081234 task=cec-bus bt=40081234,400d5678"
+    );
+    let stage: aether_proto::LastStage = "bus t_ms=4812".try_into().unwrap();
+    snapshot.last_stage = Some(&stage);
+    let staged = serde_json::to_value(status::online(&cfg, &snapshot)).unwrap();
+    assert_eq!(staged["last_stage"], "bus t_ms=4812");
+    assert_eq!(
+        staged["last_crash"],
         "28 pc=40081234 task=cec-bus bt=40081234,400d5678"
     );
     let telemetry = serde_json::to_value(status::telemetry(&snapshot)).unwrap();

@@ -39,6 +39,10 @@ pub enum ResetReason {
 /// Bounded previous-boot exception summary; addresses are symbolised on the host.
 pub type LastCrash = String<120>;
 
+/// Previous boot's last startup checkpoint and its uptime, from RTC memory;
+/// covers crashes that left no core dump.
+pub type LastStage = String<32>;
+
 /// Retained status. Only `online` is present in the offline/LWT payload.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Status {
@@ -59,6 +63,10 @@ pub struct Status {
     /// Previous panic/watchdog core dump, if recovered on this boot.
     #[serde(default)]
     pub last_crash: Option<LastCrash>,
+    /// Previous boot's last reached startup stage, present after a panic or
+    /// watchdog reset even when no core dump was written.
+    #[serde(default)]
+    pub last_stage: Option<LastStage>,
     /// Monotonic microseconds since boot.
     #[serde(default)]
     pub t_us: Option<u64>,
@@ -104,6 +112,9 @@ impl Serialize for Status {
         }
         if let Some(value) = &self.last_crash {
             object.serialize_entry("last_crash", value)?;
+        }
+        if let Some(value) = &self.last_stage {
+            object.serialize_entry("last_stage", value)?;
         }
         if let Some(value) = self.t_us {
             object.serialize_entry("t_us", &value)?;
