@@ -91,3 +91,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          # Absolute: each Cargo package is analysed as its own module and a
+          # relative report path is looked up inside every module directory.
+          args: -Dsonar.rust.lcov.reportPaths=${{ github.workspace }}/lcov.info
