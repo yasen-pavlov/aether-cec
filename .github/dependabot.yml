@@ -7,13 +7,9 @@ updates:
     groups:
       rust:
         patterns: ['*']
-  - package-ecosystem: cargo
-    directory: /firmware
-    schedule:
-      interval: weekly
-    groups:
-      firmware:
-        patterns: ['*']
+  # firmware/Cargo.lock is not listed: Dependabot cannot resolve it because
+  # firmware/rust-toolchain.toml selects the esp toolchain. It is updated by
+  # hand (see AGENTS.md).
   - package-ecosystem: github-actions
     directory: /
     schedule:
