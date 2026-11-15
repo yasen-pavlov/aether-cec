@@ -35,9 +35,12 @@ Build **in-tree without a CARGO_TARGET_DIR override**: embuild derives workspace
 paths from its output directory, so a cache target can silently skip SDK defaults.
 The Cargo config also resolves `ESP_IDF_SDKCONFIG_DEFAULTS` relative to this package.
 Before flashing, run `scripts/package-firmware.sh <dir>` from the repository
-root. It fails unless every line of `sdkconfig.defaults` (main task stack, 4 MB
-flash, custom partition table, bootloader rollback, core dump, ...) is present
-in the generated `esp-idf-sys-*/out/sdkconfig` and the application fits an OTA
+root. It runs the release build itself and takes the ELF and the `esp-idf-sys`
+output directory from Cargo's build messages, so the sdkconfig and bootloader
+it uses always belong to that build even when older `esp-idf-sys-*` directories
+are left in `target/`. It fails unless every line of `sdkconfig.defaults` (main
+task stack, 4 MB flash, custom partition table, bootloader rollback, core dump,
+...) is present in the generated sdkconfig and the application fits an OTA
 slot, then writes `aether-ota.bin` (for `POST /api/ota`), `aether-factory.bin`
 (bootloader, partition table and application merged, for offset 0x0) and
 `aether.elf`. CI runs the same script on every change.

@@ -34,12 +34,15 @@ jobs:
         with:
           tool: espflash@4.7.0
       - run: cargo fmt --check
-      - name: Build
+      # One step on purpose: the script packages the bootloader and sdkconfig of
+      # the build it ran itself, as reported by Cargo.
+      - name: Build, check sdkconfig and slot size, package images
+        shell: bash
         env:
           VERSION: ${{ inputs.version }}
-        run: AETHER_VERSION="${VERSION#v}" cargo build --release --locked
-      - name: Check sdkconfig and slot size, package images
-        run: ../scripts/package-firmware.sh "$RUNNER_TEMP/firmware" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          AETHER_VERSION="${VERSION#v}" ../scripts/package-firmware.sh "$RUNNER_TEMP/firmware" | tee "$RUNNER_TEMP/package.log"
+          tail -n 1 "$RUNNER_TEMP/package.log" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: firmware

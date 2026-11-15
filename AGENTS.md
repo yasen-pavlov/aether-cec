@@ -53,7 +53,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 cargo build -p aether-cec-core -p aether-cec-proto --target thumbv7em-none-eabi   # no_std check
 cargo llvm-cov --all-features --lcov --output-path lcov.info                      # what CI runs for tests
-cd firmware && cargo build --release && ../scripts/package-firmware.sh /tmp/aether # needs the esp toolchain
+scripts/package-firmware.sh /tmp/aether   # firmware release build + checks + images; needs the esp toolchain
 ```
 Use `CARGO_TARGET_DIR=~/.cache/aether-cec/target-<yourname>` so parallel workers do
 not fight over the lock. Never set it for `firmware/`: embuild derives paths from
