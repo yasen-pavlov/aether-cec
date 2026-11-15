@@ -40,7 +40,7 @@ jobs:
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/aether-*
-      - uses: orhun/git-cliff-action@v4
+      - uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
         id: cliff
         with:
           config: cliff.toml

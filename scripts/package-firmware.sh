@@ -27,7 +27,7 @@ cargo build --release --locked --message-format=json-render-diagnostics > "$mess
 # Exactly one line each, or the build is not what this script assumes.
 one() {
   local what=$1 value=$2
-  if [ -z "$value" ] || [ "$(printf '%s\n' "$value" | wc -l)" -ne 1 ]; then
+  if [[ -z $value || $(printf '%s\n' "$value" | wc -l) -ne 1 ]]; then
     echo "expected exactly one $what from cargo, got: ${value:-nothing}" >&2
     exit 1
   fi
@@ -38,8 +38,8 @@ idf_out=$(jq -r 'select(.reason == "build-script-executed" and (.package_id | te
 one "esp-idf-sys out_dir" "$idf_out"
 sdkconfig=$idf_out/sdkconfig
 bootloader=$idf_out/build/bootloader/bootloader.bin
-test -f "$sdkconfig" || { echo "missing $sdkconfig" >&2; exit 1; }
-test -f "$bootloader" || { echo "missing $bootloader" >&2; exit 1; }
+[[ -f $sdkconfig ]] || { echo "missing $sdkconfig" >&2; exit 1; }
+[[ -f $bootloader ]] || { echo "missing $bootloader" >&2; exit 1; }
 
 missing=0
 while IFS= read -r line; do
@@ -50,9 +50,10 @@ while IFS= read -r line; do
         missing=1
       fi
       ;;
+    *) ;; # comments, blank lines
   esac
 done < sdkconfig.defaults
-test "$missing" -eq 0 || { echo "generated sdkconfig: $sdkconfig" >&2; exit 1; }
+[[ $missing -eq 0 ]] || { echo "generated sdkconfig: $sdkconfig" >&2; exit 1; }
 
 espflash save-image --chip esp32 "$elf" "$out_dir/aether-ota.bin"
 espflash save-image --chip esp32 --merge --flash-size 4mb \
@@ -63,7 +64,7 @@ cp "$elf" "$out_dir/aether.elf"
 slot=$(awk -F, '$1 == "ota_0" { gsub(/ /, "", $5); print $5 }' partitions.csv)
 slot=$((slot))
 size=$(stat -c %s "$out_dir/aether-ota.bin")
-if [ "$size" -gt "$slot" ]; then
+if [[ $size -gt $slot ]]; then
   echo "application is $size bytes, OTA slot is $slot" >&2
   exit 1
 fi

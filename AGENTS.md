@@ -73,6 +73,13 @@ the in-tree target directory and can silently skip `sdkconfig.defaults` otherwis
   the firmware with that version and publishes OTA and factory images, the ELF,
   checksums and a provenance attestation. A CI-built image is still bench-tested
   before it replaces the bridge in the room.
+- SonarQube Cloud analyses the whole repository (workflows and scripts
+  included); `sonar-project.properties` only excludes the embedded console page
+  and the design canvases. Third-party actions are pinned to commit SHAs with
+  the version in a comment; Dependabot keeps them current.
+- When a firmware function is split, check stack frames, not only behaviour:
+  compare the `entry` frame of the task's loop function plus its largest new
+  helper against the previous image (decisions.md, 2026-11-15).
 
 ## Workers
 - Work only in the files your task names. Never commit, push, or rewrite git
