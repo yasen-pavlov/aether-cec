@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for Hex {
                 formatter.write_str("hex data containing 0..15 bytes")
             }
             fn visit_str<E: de::Error>(self, text: &str) -> Result<Hex, E> {
-                if text.len() > 30 || text.len() % 2 != 0 {
+                if text.len() > 30 || !text.len().is_multiple_of(2) {
                     return Err(E::custom("hex data must contain 0..15 bytes"));
                 }
                 let mut bytes = Vec::new();

@@ -1,0 +1,51 @@
+name: Firmware
+# Reusable: CI builds every change, the release workflow builds tags with a version.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Tag to report as status.fw (leading v stripped); empty reports 0.0.0+<commit>
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned to the compiler the bench images are built with; firmware/rust-toolchain.toml selects it.
+      - uses: esp-rs/xtensa-toolchain@v1.7
+        with:
+          version: 1.97.0.0
+          buildtargets: esp32
+          ldproxy: true
+          override: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: esp-1.97.0.0
+          # ESP-IDF sources and tools (ESP_IDF_TOOLS_INSTALL_DIR = "global").
+          cache-directories: ~/.espressif
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: espflash@4.7.0
+      - run: cargo fmt --check
+      # One step on purpose: the script packages the bootloader and sdkconfig of
+      # the build it ran itself, as reported by Cargo.
+      - name: Build, check sdkconfig and slot size, package images
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          AETHER_VERSION="${VERSION#v}" ../scripts/package-firmware.sh "$RUNNER_TEMP/firmware" | tee "$RUNNER_TEMP/package.log"
+          tail -n 1 "$RUNNER_TEMP/package.log" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware
+          path: ${{ runner.temp }}/firmware/
+          retention-days: 14
+          if-no-files-found: error

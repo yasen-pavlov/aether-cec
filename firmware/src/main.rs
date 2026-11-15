@@ -28,7 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FW: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("AETHER_GIT_SHA"));
+const FW: &str = env!("AETHER_FW");
 const _: () = assert!(FW.len() <= 24);
 
 type BootHealth = ota::Health;

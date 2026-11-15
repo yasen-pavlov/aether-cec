@@ -5,7 +5,7 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/yasen-pavlov/aether-cec"
-rust-version = "1.85"
+rust-version = "1.87"
 
 # Standalone package (not a workspace member): it needs the Xtensa toolchain
 # and must not break host-side `cargo test` at the repo root.
