@@ -1,0 +1,55 @@
+name: Release
+# A signed tag vX.Y.Z builds the firmware with that version and publishes the images.
+on:
+  push:
+    tags: ['v*']
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  firmware:
+    uses: ./.github/workflows/firmware.yml
+    with:
+      version: ${{ github.ref_name }}
+  release:
+    needs: firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: firmware
+          path: dist
+      - name: Name the assets after the tag
+        working-directory: dist
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mv aether-ota.bin "aether-$TAG-ota.bin"
+          mv aether-factory.bin "aether-$TAG-factory.bin"
+          mv aether.elf "aether-$TAG.elf"
+          sha256sum "aether-$TAG-ota.bin" "aether-$TAG-factory.bin" "aether-$TAG.elf" > SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/aether-*
+      - uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          NOTES: ${{ steps.cliff.outputs.content }}
+        run: |
+          printf '%s\n' "$NOTES" > release-notes.md
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md dist/*

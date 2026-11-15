@@ -26,7 +26,14 @@ fn main() {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=AETHER_GIT_SHA={}", sha.trim());
+    // Release builds set AETHER_VERSION (the tag without its `v`); every other
+    // build reports the package version plus the commit it was built from.
+    let fw = match std::env::var("AETHER_VERSION") {
+        Ok(version) if !version.is_empty() => version,
+        _ => format!("{}+{}", env!("CARGO_PKG_VERSION"), sha.trim()),
+    };
+    println!("cargo:rustc-env=AETHER_FW={fw}");
+    println!("cargo:rerun-if-env-changed=AETHER_VERSION");
     println!("cargo:rerun-if-changed=../.git/HEAD");
     println!("cargo:rerun-if-changed=../.git/refs");
 }

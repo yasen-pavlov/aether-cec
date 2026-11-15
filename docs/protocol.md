@@ -11,8 +11,8 @@ Status: **APPROVED 2026-10-31** (single `bus` stream QoS 1; firmware-local ident
 
 ## 0. What the bus and the current bridge actually do (evidence)
 
-Sources: `~/Workbench/Projects/personal/choregos/local/traces/cec-bus.2026-10-{30,31}.jsonl`
-(3 344 rows: 1 531 rx frames, 765 host sends, 953 send results) and the Tasmota driver on
+Sources: two days of Choregos bus traces (`cec-bus.2026-10-{30,31}.jsonl`, kept outside the repository;
+3 344 rows: 1 531 rx frames, 765 host sends, 953 send results) and the Tasmota driver on
 `ht/cec-v16` (`xdrv_70_0_hdmi_cec.ino` = engine, `xdrv_70_1_hdmi_cec.ino` = MQTT surface).
 
 Trace facts that shape the design:

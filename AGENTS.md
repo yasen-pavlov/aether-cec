@@ -12,9 +12,10 @@ what, why).
 - `crates/aether-proto` (`aether-cec-proto`, lib `aether_proto`): serde types for
   every payload in `docs/protocol.md`. `no_std` by default, `std` feature for hosts.
   Depends on `cec-core` for `Frame`/`TxStatus`; never the other way round.
-- `firmware/`: esp-idf `std` binary for the ESP32 (phase 2+). Thin executor of
-  `cec-core` actions on RMT + a one-shot timer; Wi-Fi, esp-mqtt, NVS, serial CLI,
-  OTA. Not a workspace member until the Xtensa toolchain is a CI prerequisite.
+- `firmware/`: esp-idf `std` binary for the ESP32. Thin executor of `cec-core`
+  actions on RMT + a one-shot timer; Wi-Fi, esp-mqtt, NVS, serial CLI, OTA.
+  Standalone package, not a workspace member: it needs the Xtensa toolchain and
+  must not break host-side `cargo test` at the root. CI builds it in its own job.
 - `tests/fixtures/`: frames distilled from real bus traces (`from`,`to`,`data`,`ack`
   only). No timestamps, IPs, or host state. Raw traces stay in gitignored `local/`.
 
@@ -29,7 +30,10 @@ what, why).
   poll is evidence the host relies on.
 - Secrets (Wi-Fi, MQTT) come from NVS via the serial console or build-time env;
   never from MQTT, logs, or the repo.
-- Version in `Cargo.toml` stays `0.0.0`; releases are tags.
+- Version in `Cargo.toml` stays `0.0.0`; releases are tags. A release build gets
+  its `status.fw` from `AETHER_VERSION` (set by the release workflow from the tag).
+- `rust-version` is the checked minimum for the host crates (CI job `MSRV`); raise
+  it in the same PR as the dependency that needs it.
 - Tests: behaviour, boundaries, transitions, error paths. No tests of wiring,
   copies, or defaults.
 - Public repo from day one: lab-specific values (MACs, IPs, topics) belong in
@@ -48,9 +52,27 @@ cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 cargo build -p aether-cec-core -p aether-cec-proto --target thumbv7em-none-eabi   # no_std check
+cargo llvm-cov --all-features --lcov --output-path lcov.info                      # what CI runs for tests
+cd firmware && cargo build --release && ../scripts/package-firmware.sh /tmp/aether # needs the esp toolchain
 ```
 Use `CARGO_TARGET_DIR=~/.cache/aether-cec/target-<yourname>` so parallel workers do
-not fight over the lock.
+not fight over the lock. Never set it for `firmware/`: embuild derives paths from
+the in-tree target directory and can silently skip `sdkconfig.defaults` otherwise.
+
+## Workflow
+- `main` is protected: signed commits, linear history, squash-merged pull
+  requests only, required checks `rust`, `MSRV`, `firmware / build`, `docs`,
+  `Sonar` and `SonarCloud Code Analysis`. No direct pushes, admins included.
+- Branch, open a PR, get CI green, squash-merge. The lead signs commits.
+- CI (`.github/workflows/ci.yml`): fmt, clippy, tests with coverage, `no_std`
+  build; MSRV check; full firmware build plus `scripts/package-firmware.sh`
+  (sdkconfig defaults applied, application fits an OTA slot, images as an
+  artifact); OpenAPI lint and offline Markdown link check; dependency review on
+  PRs; SonarQube Cloud with the coverage report.
+- Release: `git tag -s vX.Y.Z` on `main` and push the tag. `release.yml` builds
+  the firmware with that version and publishes OTA and factory images, the ELF,
+  checksums and a provenance attestation. A CI-built image is still bench-tested
+  before it replaces the bridge in the room.
 
 ## Workers
 - Work only in the files your task names. Never commit, push, or rewrite git
