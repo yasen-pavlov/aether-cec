@@ -445,6 +445,133 @@ impl Runner {
         self.hardware.upload_wait();
     }
 
+    fn prepare_tx(&mut self, now: u64) {
+        if self.hardware.finish() {
+            self.decoder.set_transmitting(false);
+            self.sample_offset = None;
+            self.waveform_end_us = None;
+            self.schedule.clear();
+        }
+        if !self.ota_busy.load(Ordering::Acquire)
+            && !self.tx.in_progress()
+            && !self.hardware.ack_active()
+        {
+            if let Some(request) = self.bridge.next_request() {
+                self.decoder.set_ack_set(if self.listener {
+                    AckSet::default()
+                } else {
+                    self.bridge.config().ack
+                });
+                let _ = self.tx.start(
+                    request,
+                    now,
+                    self.decoder.quiet_since_us(now),
+                    self.last_ours,
+                );
+            }
+        }
+        while let Some(sample) = self.hardware.interrupts.samples.pop() {
+            if let Some(offset) = self.sample_offset {
+                self.sample(offset, sample);
+            }
+        }
+    }
+
+    fn next_action(&mut self, step_now: u64) -> TxAction {
+        if let Some(deadline) = self.schedule.origin_deadline() {
+            if step_now >= deadline {
+                self.failure(AttemptFailure::OriginMissing, "origin_missing");
+                self.tx.line_error(step_now);
+                self.tx
+                    .step(step_now, self.decoder.quiet_since_us(step_now))
+            } else {
+                TxAction::Wait { until_us: deadline }
+            }
+        } else {
+            self.tx
+                .step(step_now, self.decoder.quiet_since_us(step_now))
+        }
+    }
+
+    fn sample_action(&mut self, at_us: u32, deadline: Option<u64>) {
+        self.sample_offset = Some(at_us);
+        let deadline = deadline.expect("sample action has deadline");
+        if !self.hardware.sample(deadline) {
+            self.sample(
+                at_us,
+                Edge {
+                    level: self.hardware.level(),
+                    t_us: ffi::now_us(),
+                },
+            );
+        }
+    }
+
+    fn abort_tx(&mut self) {
+        self.hardware.abort();
+        self.decoder.set_transmitting(false);
+        self.sample_offset = None;
+        self.waveform_end_us = None;
+        self.schedule.clear();
+        let (kind, code) = self
+            .failure
+            .take()
+            .unwrap_or((AttemptFailure::SampleLate, "sample_late"));
+        kind.record(&mut self.stats.tx);
+        // Abort/release comes before potentially blocking UART logging.
+        // Counters retain every attempt; logs are capped at one per second.
+        let failed_at = ffi::now_us();
+        if failed_at >= self.failure_log_at {
+            log::info!("tx_attempt_failed {code}");
+            self.failure_log_at = ffi::now_us().saturating_add(1_000_000);
+        }
+    }
+
+    fn complete_tx(&mut self, outcome: &cec_core::TxOutcome, final_attempt_start_us: u64) {
+        self.drain();
+        self.hardware.finish();
+        self.decoder.set_transmitting(false);
+        self.sample_offset = None;
+        self.waveform_end_us = None;
+        self.schedule.clear();
+        self.last_ours =
+            outcome.status == cec_core::TxStatus::Ack || outcome.status == cec_core::TxStatus::Nack;
+        self.stats.tx.retransmits += u64::from(outcome.attempts.saturating_sub(1));
+        match outcome.status {
+            cec_core::TxStatus::Ack => self.stats.tx.ack += 1,
+            cec_core::TxStatus::Nack => self.stats.tx.nack += 1,
+            cec_core::TxStatus::ArbLost | cec_core::TxStatus::LineError => {}
+            cec_core::TxStatus::Busy => self.stats.tx.busy += 1,
+        }
+        if let Some(event) = self.bridge.on_tx_done(*outcome, final_attempt_start_us) {
+            if matches!(
+                event,
+                cec_core::bridge::BusEvent::Tx {
+                    origin: cec_core::bridge::Origin::Local { .. },
+                    ..
+                }
+            ) {
+                self.stats.tx.local += 1;
+            }
+            self.publish(event.into());
+        }
+        self.decoder.set_ack_set(if self.listener {
+            AckSet::default()
+        } else {
+            self.bridge.config().ack
+        });
+    }
+
+    fn wait_for_action(&mut self, action: &TxAction, wait: u64) {
+        // Actions that expose the next action immediately must not sleep:
+        // first SampleAt follows SendBlock, chained blocks follow ACK samples.
+        if !self.decoder.busy() && !self.tx.in_progress() && !self.hardware.ack_active() {
+            self.hardware.idle_wait();
+        } else if matches!(action, TxAction::Wait { .. }) {
+            self.hardware.wait(wait);
+        }
+    }
+
     fn run(mut self) -> ! {
         ffi::cec::watch_bus().expect("cec_watchdog_init_failed");
         if let Err(error) = self.hardware.arm() {
@@ -465,49 +592,9 @@ impl Runner {
             self.drain();
             self.commands();
             let now = ffi::now_us();
-            if self.hardware.finish() {
-                self.decoder.set_transmitting(false);
-                self.sample_offset = None;
-                self.waveform_end_us = None;
-                self.schedule.clear();
-            }
-            if !self.ota_busy.load(Ordering::Acquire)
-                && !self.tx.in_progress()
-                && !self.hardware.ack_active()
-            {
-                if let Some(request) = self.bridge.next_request() {
-                    self.decoder.set_ack_set(if self.listener {
-                        AckSet::default()
-                    } else {
-                        self.bridge.config().ack
-                    });
-                    let _ = self.tx.start(
-                        request,
-                        now,
-                        self.decoder.quiet_since_us(now),
-                        self.last_ours,
-                    );
-                }
-            }
-            while let Some(sample) = self.hardware.interrupts.samples.pop() {
-                if let Some(offset) = self.sample_offset {
-                    self.sample(offset, sample);
-                }
-            }
+            self.prepare_tx(now);
             let step_now = ffi::now_us();
-            let action = if let Some(deadline) = self.schedule.origin_deadline() {
-                if step_now >= deadline {
-                    self.failure(AttemptFailure::OriginMissing, "origin_missing");
-                    self.tx.line_error(step_now);
-                    self.tx
-                        .step(step_now, self.decoder.quiet_since_us(step_now))
-                } else {
-                    TxAction::Wait { until_us: deadline }
-                }
-            } else {
-                self.tx
-                    .step(step_now, self.decoder.quiet_since_us(step_now))
-            };
+            let action = self.next_action(step_now);
             let deadline = self.schedule.action(action);
             let mut wait = now + 1000;
             match action {
@@ -540,73 +627,16 @@ impl Runner {
                     }
                 }
                 TxAction::SampleAt { at_us } => {
-                    self.sample_offset = Some(at_us);
-                    let deadline = deadline.expect("sample action has deadline");
-                    if !self.hardware.sample(deadline) {
-                        self.sample(
-                            at_us,
-                            Edge {
-                                level: self.hardware.level(),
-                                t_us: ffi::now_us(),
-                            },
-                        );
-                    }
+                    self.sample_action(at_us, deadline);
                 }
                 TxAction::Abort => {
-                    self.hardware.abort();
-                    self.decoder.set_transmitting(false);
-                    self.sample_offset = None;
-                    self.waveform_end_us = None;
-                    self.schedule.clear();
-                    let (kind, code) = self
-                        .failure
-                        .take()
-                        .unwrap_or((AttemptFailure::SampleLate, "sample_late"));
-                    kind.record(&mut self.stats.tx);
-                    // Abort/release comes before potentially blocking UART logging.
-                    // Counters retain every attempt; logs are capped at one per second.
-                    let failed_at = ffi::now_us();
-                    if failed_at >= self.failure_log_at {
-                        log::info!("tx_attempt_failed {code}");
-                        self.failure_log_at = ffi::now_us().saturating_add(1_000_000);
-                    }
+                    self.abort_tx();
                 }
                 TxAction::Done {
                     outcome,
                     final_attempt_start_us,
                 } => {
-                    self.drain();
-                    self.hardware.finish();
-                    self.decoder.set_transmitting(false);
-                    self.sample_offset = None;
-                    self.waveform_end_us = None;
-                    self.schedule.clear();
-                    self.last_ours = outcome.status == cec_core::TxStatus::Ack
-                        || outcome.status == cec_core::TxStatus::Nack;
-                    self.stats.tx.retransmits += u64::from(outcome.attempts.saturating_sub(1));
-                    match outcome.status {
-                        cec_core::TxStatus::Ack => self.stats.tx.ack += 1,
-                        cec_core::TxStatus::Nack => self.stats.tx.nack += 1,
-                        cec_core::TxStatus::ArbLost | cec_core::TxStatus::LineError => {}
-                        cec_core::TxStatus::Busy => self.stats.tx.busy += 1,
-                    }
-                    if let Some(event) = self.bridge.on_tx_done(outcome, final_attempt_start_us) {
-                        if matches!(
-                            event,
-                            cec_core::bridge::BusEvent::Tx {
-                                origin: cec_core::bridge::Origin::Local { .. },
-                                ..
-                            }
-                        ) {
-                            self.stats.tx.local += 1;
-                        }
-                        self.publish(event.into());
-                    }
-                    self.decoder.set_ack_set(if self.listener {
-                        AckSet::default()
-                    } else {
-                        self.bridge.config().ack
-                    });
+                    self.complete_tx(&outcome, final_attempt_start_us);
                 }
                 TxAction::Wait { until_us } => {
                     if self.tx.in_progress() {
@@ -615,13 +645,7 @@ impl Runner {
                 }
             }
             self.snapshot();
-            // Actions that expose the next action immediately must not sleep:
-            // first SampleAt follows SendBlock, chained blocks follow ACK samples.
-            if !self.decoder.busy() && !self.tx.in_progress() && !self.hardware.ack_active() {
-                self.hardware.idle_wait();
-            } else if matches!(action, TxAction::Wait { .. }) {
-                self.hardware.wait(wait);
-            }
+            self.wait_for_action(&action, wait);
         }
     }
 }

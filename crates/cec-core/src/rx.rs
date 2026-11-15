@@ -298,6 +298,9 @@ impl Decoder {
         if !one && !timing::DATA_LOW_0.contains(duration) && !valid_ack {
             return self.error(RxError::BitTiming, Some(edge), duration);
         }
+        self.decode_data_bit(one, duration, edge)
+    }
+    fn decode_data_bit(&mut self, one: bool, duration: u64, edge: Edge) -> Option<RxEvent> {
         match self.bit {
             0..=7 => {
                 self.byte = (self.byte << 1) | u8::from(one);

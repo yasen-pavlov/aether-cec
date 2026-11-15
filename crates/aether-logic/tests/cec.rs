@@ -502,29 +502,16 @@ fn transmit_with_echo_after_preparation(
     let mut blocks = 0;
     let mut queued_while_low = false;
     for _ in 0..1000 {
-        while edges.front().is_some_and(|edge| edge.t_us <= now) {
-            let edge = edges.pop_front().unwrap();
-            level = edge.level;
-            if let Some(origin) = schedule.edge(edge) {
-                tx.block_started(origin);
-            }
-            if let Some(event) = decoder.edge(edge) {
-                observe_echo(event, &mut tx, &mut schedule, now, &mut events);
-            }
-        }
-        while let Some(event) = decoder.poll(now) {
-            observe_echo(event, &mut tx, &mut schedule, now, &mut events);
-        }
-        if let Some((deadline, offset)) = sample {
-            if now >= deadline {
-                if schedule.driven_low(offset) && level != Level::Low {
-                    tx.line_error(now);
-                } else {
-                    tx.line_sample(level, now);
-                }
-                sample = None;
-            }
-        }
+        drain_echo(
+            &mut tx,
+            &mut decoder,
+            &mut schedule,
+            &mut edges,
+            &mut events,
+            &mut level,
+            now,
+        );
+        sample_echo(&mut tx, &schedule, level, now, &mut sample);
         let action = if let Some(deadline) = schedule.origin_deadline() {
             assert!(now < deadline, "missing block origin");
             TxAction::Wait { until_us: deadline }
@@ -570,6 +557,49 @@ fn transmit_with_echo_after_preparation(
         }
     }
     panic!("executor failed to complete");
+}
+
+fn drain_echo(
+    tx: &mut Tx,
+    decoder: &mut Decoder,
+    schedule: &mut Schedule,
+    edges: &mut std::collections::VecDeque<Edge>,
+    events: &mut Vec<RxEvent>,
+    level: &mut Level,
+    now: u64,
+) {
+    while edges.front().is_some_and(|edge| edge.t_us <= now) {
+        let edge = edges.pop_front().unwrap();
+        *level = edge.level;
+        if let Some(origin) = schedule.edge(edge) {
+            tx.block_started(origin);
+        }
+        if let Some(event) = decoder.edge(edge) {
+            observe_echo(event, tx, schedule, now, events);
+        }
+    }
+    while let Some(event) = decoder.poll(now) {
+        observe_echo(event, tx, schedule, now, events);
+    }
+}
+
+fn sample_echo(
+    tx: &mut Tx,
+    schedule: &Schedule,
+    level: Level,
+    now: u64,
+    sample: &mut Option<(u64, u32)>,
+) {
+    if let Some((deadline, offset)) = *sample {
+        if now >= deadline {
+            if schedule.driven_low(offset) && level != Level::Low {
+                tx.line_error(now);
+            } else {
+                tx.line_sample(level, now);
+            }
+            *sample = None;
+        }
+    }
 }
 
 fn queue_echo(
