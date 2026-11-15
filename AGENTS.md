@@ -77,6 +77,12 @@ the in-tree target directory and can silently skip `sdkconfig.defaults` otherwis
   included); `sonar-project.properties` only excludes the embedded console page
   and the design canvases. Third-party actions are pinned to commit SHAs with
   the version in a comment; Dependabot keeps them current.
+- Dependabot covers the root `Cargo.lock` and the Actions, not
+  `firmware/Cargo.lock` (it cannot resolve the `esp` toolchain). When it bumps a
+  crate the firmware also uses (`heapless`, `serde`, `serde_json`), apply the
+  same version in a follow-up PR with `cargo update -p <crate> --precise <ver>`
+  in `firmware/`, so the host tests exercise the versions the firmware ships.
+  Other firmware dependencies are bumped by hand, with a bench test.
 - When a firmware function is split, check stack frames, not only behaviour:
   compare the `entry` frame of the task's loop function plus its largest new
   helper against the previous image (decisions.md, 2026-11-15).
