@@ -997,3 +997,48 @@ fn only_real_backlog_overflow_is_lost_and_reports_preserve_original_count() {
     assert_eq!(losses.pending(), 0);
     assert!(losses.report(&mut bridge, 3, |_| panic!("no recursive overrun")));
 }
+
+#[test]
+fn ack_evidence_is_recent_saturating_and_only_completed_after_release() {
+    use aether_logic::cec::ack_evidence;
+    let assertion = 1_u64 << 33;
+    let held = Some(timing::ACK_LOW);
+    let limit = u64::from(timing::STUCK_LOW);
+    assert_eq!(ack_evidence(assertion, None, held), (None, None));
+    assert_eq!(
+        ack_evidence(assertion, Some(assertion), None),
+        (Some(0), None)
+    );
+    assert_eq!(
+        ack_evidence(assertion - 1, Some(assertion), held),
+        (Some(0), held)
+    );
+    assert_eq!(
+        ack_evidence(assertion + limit, Some(assertion), held),
+        (Some(timing::STUCK_LOW), held)
+    );
+    assert_eq!(
+        ack_evidence(assertion + limit + 1, Some(assertion), held),
+        (None, None)
+    );
+}
+
+#[test]
+fn ack_late_starts_above_the_accepted_zero_low_window() {
+    use aether_logic::cec::ack_late;
+    assert!(!ack_late(timing::DATA_LOW_0.max));
+    assert!(ack_late(timing::DATA_LOW_0.max + 1));
+}
+
+#[test]
+fn pin_high_age_is_absent_saturating_and_bounded() {
+    use aether_logic::cec::pin_high_age;
+    let high = 1_u64 << 33;
+    assert_eq!(pin_high_age(high, None), None);
+    assert_eq!(pin_high_age(high - 1, Some(high)), Some(0));
+    assert_eq!(pin_high_age(high, Some(high)), Some(0));
+    assert_eq!(pin_high_age(high + 1, Some(high)), Some(1));
+    for age in [u64::from(u32::MAX), u64::from(u32::MAX) + 1] {
+        assert_eq!(pin_high_age(high + age, Some(high)), Some(u32::MAX));
+    }
+}

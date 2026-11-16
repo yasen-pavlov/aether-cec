@@ -161,6 +161,10 @@ impl Losses {
             gap_us: None,
             bit: None,
             hist: None,
+            pin: None,
+            pin_high_age_us: None,
+            ack_age_us: None,
+            ack_held_us: None,
         };
         if send(event) {
             bridge.next_seq();

@@ -1,6 +1,6 @@
 //! Unsafe ESP-IDF boundary, imported as ffi::cec. All contexts are retained
 //! for the lifetime of the bus task; callbacks never borrow movable task data.
-use aether_logic::cec::{Block, EdgeRing, ack_in_window};
+use aether_logic::cec::{Block, EdgeRing, ack_evidence, ack_in_window, ack_late};
 use cec_core::{
     rx::{Edge, Level},
     timing,
@@ -35,6 +35,14 @@ pub struct Interrupts {
     ack_armed: AtomicBool,
     ack_active: AtomicBool,
     ack_count: AtomicU32,
+    // Independent diagnostic words: 0 unavailable, 1 held, 2 released.
+    // Release/acquire publishes payloads; a concurrent new ACK can mix records.
+    ack_evidence_state: AtomicU32,
+    ack_assert_low: AtomicU32,
+    ack_assert_high: AtomicU32,
+    ack_held_us: AtomicU32,
+    ack_held_max_us: AtomicU32,
+    ack_late: AtomicU32,
     ack_release: sys::esp_timer_handle_t,
     sample_timer: sys::esp_timer_handle_t,
     wake_timer: sys::esp_timer_handle_t,
@@ -97,6 +105,14 @@ unsafe extern "C" fn edge_isr(arg: *mut core::ffi::c_void) {
                 context.ack_active.store(false, Ordering::Release);
             } else {
                 context.ack_count.fetch_add(1, Ordering::Relaxed);
+                // Only observable by a reader on another core or above level 3;
+                // same-core task/timer readers cannot interrupt this publication.
+                context.ack_evidence_state.store(0, Ordering::Release);
+                context.ack_assert_low.store(now as u32, Ordering::Relaxed);
+                context
+                    .ack_assert_high
+                    .store((now >> 32) as u32, Ordering::Relaxed);
+                context.ack_evidence_state.store(1, Ordering::Release);
             }
         }
     }
@@ -112,6 +128,22 @@ unsafe extern "C" fn release_isr(arg: *mut core::ffi::c_void) {
         sys::gpio_set_level(context.pin, 1);
     }
     context.ack_active.store(false, Ordering::Release);
+    // Release the pad before any diagnostic work, even if the timer ran late.
+    let now = unsafe { sys::esp_timer_get_time() as u64 };
+    if context.ack_evidence_state.load(Ordering::Acquire) == 1 {
+        let assertion = u64::from(context.ack_assert_low.load(Ordering::Relaxed))
+            | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32);
+        let held = now.saturating_sub(assertion).min(u64::from(u32::MAX)) as u32;
+        context.ack_held_us.store(held, Ordering::Relaxed);
+        context.ack_evidence_state.store(2, Ordering::Release);
+        // Only this ISR writes the maximum; avoid a compare/exchange loop.
+        if held > context.ack_held_max_us.load(Ordering::Relaxed) {
+            context.ack_held_max_us.store(held, Ordering::Relaxed);
+        }
+        if ack_late(held) {
+            context.ack_late.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 #[unsafe(link_section = ".iram1.text")]
 unsafe extern "C" fn sample_isr(arg: *mut core::ffi::c_void) {
@@ -226,6 +258,12 @@ impl Hardware {
                 ack_armed: AtomicBool::new(false),
                 ack_active: AtomicBool::new(false),
                 ack_count: AtomicU32::new(0),
+                ack_evidence_state: AtomicU32::new(0),
+                ack_assert_low: AtomicU32::new(0),
+                ack_assert_high: AtomicU32::new(0),
+                ack_held_us: AtomicU32::new(0),
+                ack_held_max_us: AtomicU32::new(0),
+                ack_late: AtomicU32::new(0),
                 ack_release: core::ptr::null_mut(),
                 sample_timer: core::ptr::null_mut(),
                 wake_timer: core::ptr::null_mut(),
@@ -378,6 +416,26 @@ impl Hardware {
     pub fn ack_count(&self) -> u32 {
         self.interrupts.ack_count.swap(0, Ordering::Relaxed)
     }
+    /// Best-effort diagnostic snapshot, never a lock or retry in an ISR.
+    /// A new assertion during these loads may mix records (protocol §5.3).
+    pub fn ack_evidence(&self, t_us: u64, age: &mut Option<u32>, held: &mut Option<u32>) {
+        let context = &self.interrupts;
+        let state = context.ack_evidence_state.load(Ordering::Acquire);
+        let assertion = u64::from(context.ack_assert_low.load(Ordering::Relaxed))
+            | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32);
+        (*age, *held) = ack_evidence(
+            t_us,
+            (state != 0).then_some(assertion),
+            (state == 2).then(|| context.ack_held_us.load(Ordering::Relaxed)),
+        );
+    }
+    /// Drain a 32-bit ISR delta into the bus task's per-boot u64 counter.
+    pub fn take_ack_late(&self) -> u32 {
+        self.interrupts.ack_late.swap(0, Ordering::Relaxed)
+    }
+    pub fn ack_held_max_us(&self) -> u32 {
+        self.interrupts.ack_held_max_us.load(Ordering::Relaxed)
+    }
     pub fn sample(&self, at_us: u64) -> bool {
         let now = crate::ffi::now_us();
         if at_us <= now {
@@ -467,6 +525,11 @@ impl Hardware {
             sys::gpio_set_level(self.interrupts.pin, 1);
         }
         self.interrupts.ack_active.store(false, Ordering::Release);
+        // Do not report a hand-released state-1 ACK as still held. This also
+        // drops a completed state-2 record before Runner's suspend drain.
+        self.interrupts
+            .ack_evidence_state
+            .store(0, Ordering::Release);
     }
 
     pub fn upload_wait(&self) {

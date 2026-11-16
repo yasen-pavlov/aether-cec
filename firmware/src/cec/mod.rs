@@ -163,6 +163,7 @@ struct Runner {
     lost: Losses,
     failure: Option<(AttemptFailure, &'static str)>,
     failure_log_at: u64,
+    last_pin_high_us: Option<u64>,
 }
 impl Runner {
     fn new(init: Init) -> Self {
@@ -206,6 +207,7 @@ impl Runner {
             lost: Losses::default(),
             failure: None,
             failure_log_at: 0,
+            last_pin_high_us: (level == Level::High).then_some(now),
         }
     }
     fn publish(&mut self, event: BusEvent) {
@@ -279,11 +281,28 @@ impl Runner {
             }
         }
         if let Some(event) = self.bridge.on_rx(event, now) {
-            self.publish(event.into());
+            let mut event: BusEvent = event.into();
+            if let BusEvent::Err {
+                t_us,
+                pin,
+                pin_high_age_us,
+                ack_age_us,
+                ack_held_us,
+                ..
+            } = &mut event
+            {
+                *pin = Some(self.hardware.level().into());
+                *pin_high_age_us = aether_logic::cec::pin_high_age(*t_us, self.last_pin_high_us);
+                self.hardware.ack_evidence(*t_us, ack_age_us, ack_held_us);
+            }
+            self.publish(event);
         }
     }
     fn drain(&mut self) {
         let now = ffi::now_us();
+        if self.hardware.level() == Level::High {
+            self.last_pin_high_us = Some(now);
+        }
         while let Some(edge) = self.hardware.interrupts.edges.pop() {
             if let Some(origin) = self.schedule.edge(edge) {
                 self.tx.block_started(origin);
@@ -317,6 +336,7 @@ impl Runner {
         let lost = self.hardware.interrupts.edges.take_lost();
         if lost != 0 {
             self.stats.rx.errors += u64::from(lost);
+            *self.stats.rx.edges_lost.get_or_insert(0) += u64::from(lost);
             self.decoder = Decoder::new(if self.listener {
                 AckSet::default()
             } else {
@@ -398,6 +418,8 @@ impl Runner {
             && self.deferred_config.is_none()
             && self.hardware.finished()
             && !self.hardware.ack_active();
+        *self.stats.rx.ack_late.get_or_insert(0) += u64::from(self.hardware.take_ack_late());
+        self.stats.rx.ack_held_max_us = Some(self.hardware.ack_held_max_us());
         if let Ok(mut shared) = self.snapshot.try_lock() {
             *shared = self.stats.clone();
         }

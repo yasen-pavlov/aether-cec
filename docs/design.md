@@ -293,6 +293,15 @@ bounded rejected input, returning `None` when it cannot fit the 30-byte wire
 buffer. IDs unavailable to the executor are omitted, including malformed input
 and `id_too_long`; local events also omit id.
 
+Firmware-only receive evidence extends `BusEvent::Err` with
+`pin: Option<Level>`, `pin_high_age_us: Option<u32>`, `ack_age_us: Option<u32>`
+and `ack_held_us: Option<u32>`. The core-event conversion leaves all four `None`;
+`Runner::rx` fills them after conversion, using task-side GPIO observations and
+the latest follower-ACK record. `RxCounters` adds `ack_late: Option<u64>`,
+`ack_held_max_us: Option<u32>` and `edges_lost: Option<u64>`. All seven fields
+default to `None` on decode and are omitted on encode when absent; firmware
+snapshots always include the counters.
+
 `no_std` + `alloc`-free: strings are `heapless::String<N>` with the wire bounds
 (`id` 16, `osd` 14, `node` 16, `fw` 24, reasons 32), except lenient ingress above.
 `serde_json` is optional and activated only by `std` for hosts; it is also a
@@ -336,6 +345,60 @@ neither `serde_json` nor serde's `alloc` feature.
 `crates/aether-logic` is a plain-std workspace member containing configuration
 merge/validation, bounded quoted-console parsing, command plans, validated TX
 submission, bounded MQTT reassembly, CEC executor primitives and runtime snapshots.
+
+`aether_logic::cec::ack_evidence(t_us: u64, assert_us: Option<u64>,
+held_us: Option<u32>) -> (Option<u32>, Option<u32>)` filters ACK evidence:
+age saturates at zero and is included through `timing::STUCK_LOW`, inclusive;
+held duration is included only with a recent assertion and a completed release.
+The evidence helper is forced inline on Xtensa to avoid passing its optional
+timestamp and tuple across the affected stack-argument ABI; host builds use an
+ordinary function so integration-test coverage is attributed correctly.
+`ack_late(held_us: u32) -> bool` uses the strict `timing::DATA_LOW_0.max` boundary
+and is forced inline on Xtensa so the release ISR cannot call flash code.
+
+`pin_high_age(t_us: u64, last_high_us: Option<u64>) -> Option<u32>` returns
+the saturating age of the task's last High GPIO read (clamped to `u32::MAX`),
+or `None` before that first observation. It is forced inline on Xtensa for the
+same ABI reason, but remains an ordinary host function for coverage attribution.
+`Runner.last_pin_high_us: Option<u64>` retains this observation:
+`drain` reads the GPIO immediately after its existing `now` read and records
+`now` only when High, before draining any edges. Error emission uses the
+error's `t_us` for the age, independently of decoder edges.
+
+For `line_low` at ACK bit 9, the assertion and the decoder's last fall share
+one ISR timestamp: `ack_age_us == dur_us` exactly identifies the failing slot.
+
+| Evidence | Interpretation |
+|---|---|
+| ACK age absent or not equal to `dur_us` | No bridge ACK in this slot; an earlier block's ACK is older by multiples of 24 000 µs. |
+| ACK age equals `dur_us`; held duration absent or above `DATA_LOW_0.max` | Own ACK remains held or was released late; telemetry records completed late holds. |
+| ACK age equals `dur_us`; held near `ACK_LOW`; High age at least `dur_us` | No task High read since the fall: another participant holding the line is likely, not certain. |
+| ACK age equals `dur_us`; held near `ACK_LOW`; High age less than `dur_us` | A task read proves the line rose after the fall; edges were lost before the decoder. |
+
+`pin` alone distinguishes the last two cases only for a final block: on a
+non-final block the initiator keeps transmitting and may drive Low again at
+detection. Task samples are about a millisecond apart and can miss a High pulse;
+no prior High observation leaves that part of the diagnosis unavailable.
+A proposed GPIO read immediately after release in the ISR was rejected:
+the open-drain line is still rising 1–2 µs after release, so healthy ACKs would
+read Low. No post-release ISR sample, waits or extra wakeups are added.
+
+`Hardware::ack_evidence(&self, t_us: u64, age: &mut Option<u32>,
+held: &mut Option<u32>)` copies the diagnostic words without passing a new
+aggregate by value across the firmware ABI. An `AtomicU32` state (unavailable,
+held, released) publishes two relaxed assertion timestamp words and the released
+hold duration with release/acquire ordering. No lock, spin or critical section
+is introduced. A concurrent new assertion can mix timestamp halves or pair an
+assertion with another hold, as permitted by protocol §5.3; a snapshot during
+publication can omit the evidence. This is not used to control the bus.
+`Hardware::take_ack_late(&self) -> u32` drains the ISR delta into the task-owned
+`u64` total on each snapshot (a delta could wrap only after 2^32 late releases
+without a snapshot); `Hardware::ack_held_max_us(&self) -> u32` reads the per-boot
+maximum. The existing ring `take_lost()` delta also accumulates into
+`BusSnapshot.rx.edges_lost`. OTA manual release invalidates the ACK record
+rather than fabricating a release-ISR measurement. The release ISR releases the
+GPIO before reading the clock or updating any evidence/counter.
+
 Protocol structs remain the one
 wire definition. `CommandResult.id` is now optional and omitted for malformed
 commands; valid commands always echo their ID. `pa:edid` is rejected as
