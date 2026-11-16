@@ -93,7 +93,7 @@ fn every_documented_json_example_round_trips() {
             block.push('\n');
         }
     }
-    assert_eq!(count, 28, "all concrete fenced examples in sections 3–9");
+    assert_eq!(count, 29, "all concrete fenced examples in sections 3–9");
 }
 
 #[test]
@@ -526,6 +526,9 @@ fn decoder_error_evidence_and_overrun_have_exact_golden_json() {
         r#"{"ev":"err","seq":819,"t_us":48700100,"kind":"start_bit","bits":0}"#,
         r#"{"ev":"err","seq":827,"t_us":48910000,"kind":"line_low","same_level":false,"dur_us":4951,"gap_us":0,"hist":[]}"#,
         r#"{"ev":"err","seq":828,"t_us":48920000,"kind":"bit_timing","bits":1,"level":"low","same_level":true,"dur_us":7,"gap_us":7,"bit":1,"hist":[3700,800,600,1800]}"#,
+        r#"{"ev":"err","seq":829,"t_us":49000000,"kind":"line_low","pin":"low","ack_age_us":5040}"#,
+        r#"{"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","pin":"high","ack_age_us":5040,"ack_held_us":1512}"#,
+        r#"{"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","from":8,"to":0,"bits":16,"same_level":false,"dur_us":5042,"gap_us":0,"bit":9,"hist":[604,1796,1504,896,604,1796,1507,893],"pin":"low","pin_high_age_us":5310,"ack_age_us":5042}"#,
     ] {
         let event: BusEvent = serde_json::from_str(text).unwrap();
         assert_eq!(serde_json::to_string(&event).unwrap(), text);
@@ -545,5 +548,18 @@ fn decoder_error_history_is_bounded_and_levels_are_typed() {
     ] {
         let text = format!(r#"{{"ev":"err","seq":1,"t_us":0,"kind":"bit_timing",{extra}}}"#);
         assert!(serde_json::from_str::<BusEvent>(&text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn receive_counters_preserve_legacy_bytes_and_new_evidence() {
+    for text in [
+        r#"{"frames":1531,"errors":2,"acked_by_us":303}"#,
+        r#"{"frames":1531,"errors":2,"acked_by_us":303,"ack_late":0,"ack_held_max_us":1512,"edges_lost":0}"#,
+        r#"{"frames":1531,"errors":2,"acked_by_us":303,"ack_late":18446744073709551615,"ack_held_max_us":4294967295,"edges_lost":18446744073709551615}"#,
+    ] {
+        let counters: RxCounters = serde_json::from_str(text).unwrap();
+        assert_eq!(serde_json::to_string(&counters).unwrap(), text);
+        round_trip::<RxCounters>(text);
     }
 }

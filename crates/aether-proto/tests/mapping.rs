@@ -161,6 +161,10 @@ fn decoding_errors_preserve_known_header_and_partial_bit_count() {
                 gap_us: Some(7),
                 bit: Some(1),
                 hist: Some([600, 1800].into_iter().collect()),
+                pin: None,
+                pin_high_age_us: None,
+                ack_age_us: None,
+                ack_held_us: None,
             }
         );
     }

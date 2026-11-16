@@ -30,6 +30,9 @@ impl Default for BusSnapshot {
                 frames: 0,
                 errors: 0,
                 acked_by_us: 0,
+                ack_late: Some(0),
+                ack_held_max_us: Some(0),
+                edges_lost: Some(0),
             },
             tx: TxCounters {
                 host: 0,

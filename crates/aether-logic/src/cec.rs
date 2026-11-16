@@ -14,6 +14,42 @@ pub fn ack_in_window(now_us: u64, fall_at_us: u64) -> bool {
         && now_us <= fall_at_us.saturating_add(u64::from(timing::DATA_TOTAL.max - timing::BIT))
 }
 
+/// Recent follower-ACK evidence at an error's timestamp. A future assertion
+/// saturates to age zero; an unreleased ACK has no completed hold duration.
+// Keep the optional timestamp/tuple inside firmware callers, not across the
+// bench-affected Xtensa stack-argument ABI.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub fn ack_evidence(
+    t_us: u64,
+    assert_us: Option<u64>,
+    held_us: Option<u32>,
+) -> (Option<u32>, Option<u32>) {
+    let Some(assert_us) = assert_us else {
+        return (None, None);
+    };
+    let age = t_us.saturating_sub(assert_us);
+    if age > u64::from(timing::STUCK_LOW) {
+        return (None, None);
+    }
+    (u32::try_from(age).ok(), held_us)
+}
+
+/// Age of the task's last High GPIO read, absent until that first observation.
+/// Inlined to keep the optional timestamp inside the firmware caller's ABI.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub fn pin_high_age(t_us: u64, last_high_us: Option<u64>) -> Option<u32> {
+    last_high_us.map(|last_high| u32::try_from(t_us.saturating_sub(last_high)).unwrap_or(u32::MAX))
+}
+
+/// Strict upper accepted data-zero boundary, also used by the release ISR.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub fn ack_late(held_us: u32) -> bool {
+    held_us > timing::DATA_LOW_0.max
+}
+
 /// One low/high RMT symbol at one tick per microsecond.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Symbol {

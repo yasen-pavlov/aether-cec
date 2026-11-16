@@ -946,7 +946,20 @@ components:
     Err:
       type: object
       required: [ev, seq, t_us, kind]
-      description: At most one decoder error per frame until a new start; overrun reports lost ring/event/MQTT events. Optional evidence is absent in older firmware.
+      description: |
+        At most one decoder error per frame until a new start; overrun reports
+        lost ring/event/MQTT events. Optional evidence is absent in older firmware.
+        At line_low bit 9, ack_age_us equals dur_us exactly for the failing ACK
+        slot. Absent or unequal age means no bridge ACK in that slot; an earlier
+        block's ACK is older by multiples of 24000 microseconds. With equal age,
+        an absent hold or a hold above 1800 means still asserted or released late.
+        A hold near 1500 and pin_high_age_us at least dur_us means another device
+        likely held the line; a High age below dur_us proves the line rose and
+        edges were lost. Millisecond task samples can miss a High pulse, so
+        all-low observations are not proof. pin alone separates these last two
+        cases only on a final block; otherwise the initiator keeps transmitting.
+        A post-release ISR pin read was rejected because the open-drain line is
+        still rising 1-2 microseconds after release and healthy ACKs would read low.
       properties:
         ev: {const: err, description: Decode-error/overrun discriminator.}
         seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by all bus events.}
@@ -969,9 +982,14 @@ components:
           maxItems: 8
           items: {type: integer, minimum: 0, maximum: 4294967295}
           description: Previous inter-edge microsecond intervals oldest-first, reset at start fall. First may be idle gap; failing interval appears only in gap_us. Optional.
+        pin: {type: string, enum: [high, low], description: GPIO input read by the bus task when emitting a decoder error; independent of the edge stream. Optional in older firmware.}
+        pin_high_age_us: {type: integer, minimum: 0, maximum: 4294967295, description: Error timestamp minus the last task-side High GPIO read saturating at zero and u32 MAX; absent until the first High read of this boot. Sampled independently of decoder edges on each drain pass.}
+        ack_age_us: {type: integer, minimum: 0, maximum: 100000, description: Error timestamp minus most recent follower ACK assertion saturating at zero; absent if no assertion or older than STUCK_LOW. Lock-free snapshots can mix two assertions.}
+        ack_held_us: {type: integer, minimum: 0, maximum: 4294967295, description: Assertion-to-release-ISR duration; present only with ack_age_us and once released. Absent while still held.}
       examples:
         - {ev: err, seq: 826, t_us: 48900100, kind: bit_timing, from: 4, to: 0, bits: 40, level: low, same_level: false, dur_us: 1900, gap_us: 1170, bit: 8, hist: [1790, 1500, 900, 620, 1780, 1510, 890, 730]}
         - {ev: err, seq: 820, t_us: 48711000, kind: overrun, dropped: 4}
+        - {ev: err, seq: 830, t_us: 49000000, kind: line_low, from: 8, to: 0, bits: 16, same_level: false, dur_us: 5042, gap_us: 0, bit: 9, hist: [604, 1796, 1504, 896, 604, 1796, 1507, 893], pin: low, pin_high_age_us: 5310, ack_age_us: 5042}
     Line:
       type: object
       required: [ev, seq, t_us]
@@ -1029,6 +1047,9 @@ components:
             frames: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Valid complete or NACK-terminated frames received.}
             errors: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Receive decode failures.}
             acked_by_us: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Frames acknowledged by this bridge.}
+            ack_late: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Follower ACK holds longer than DATA_LOW_0.max; optional in older telemetry and always included by new firmware.}
+            ack_held_max_us: {type: integer, minimum: 0, maximum: 4294967295, description: Longest assertion-to-release-ISR follower ACK hold this boot; optional in older telemetry and always included by new firmware.}
+            edges_lost: {type: integer, minimum: 0, maximum: 18446744073709551615, description: Edges dropped by the full ISR ring this boot; also included in errors. Optional in older telemetry and always included by new firmware.}
         tx:
           $ref: '#/components/schemas/TxCounters'
           description: Per-boot transmit request/attempt counters, including optional line-error causes.

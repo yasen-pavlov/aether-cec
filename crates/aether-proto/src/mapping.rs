@@ -41,11 +41,8 @@ impl From<bridge::BusEvent> for BusEvent {
                     to: Some(frame.to),
                     data: Some(TxData::Hex(Hex(frame.data))),
                     status: outcome.status.into(),
-                    attempts: if outcome.status == cec_core::frame::TxStatus::Busy {
-                        None
-                    } else {
-                        Some(outcome.attempts)
-                    },
+                    attempts: (outcome.status != cec_core::frame::TxStatus::Busy)
+                        .then_some(outcome.attempts),
                     reason: None,
                     reply_to,
                 }
@@ -79,6 +76,10 @@ impl From<bridge::BusEvent> for BusEvent {
                     gap_us: Some(detail.gap_us),
                     bit: detail.bit,
                     hist: Some(detail.history),
+                    pin: None,
+                    pin_high_age_us: None,
+                    ack_age_us: None,
+                    ack_held_us: None,
                 }
             }
             bridge::BusEvent::Line {

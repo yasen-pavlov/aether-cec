@@ -289,6 +289,43 @@ the last accepted low pulse in `hist` was 730 µs, followed by the failing
 | `bit` | the bit whose low phase is in progress or whose falling edge is due: 0–7 data, 8 EOM, 9 ACK; absent during the start bit. For `level:"low"` failures and high-phase timeouts the failed interval belongs to `bit−1` (`bit:0` ⇒ previous block's ACK) |
 | `hist` | up to eight intervals (µs) between preceding edges, oldest first; resets at the start fall. `hist[0]` may be the idle gap before the frame (up to u32::MAX). The failing interval appears only in `gap_us` |
 
+Firmware-side evidence (added 2026-11-16; optional, older payloads omit every key). The decoder
+keys above are derived from the edge stream alone: `line_low` means "the last edge the decoder
+saw was a fall and no edge followed in time", which a line that is really low and a rising edge
+that never reached the decoder produce identically. These keys are measured outside the decoder
+and are attached to every decoder error (`start_bit`, `bit_timing`, `eom_missing`, `line_low`):
+
+```json
+{"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","from":8,"to":0,"bits":16,
+ "same_level":false,"dur_us":5042,"gap_us":0,"bit":9,"hist":[604,1796,1504,896,604,1796,1507,893],
+ "pin":"low","pin_high_age_us":5310,"ack_age_us":5042}
+```
+
+| Key | Meaning |
+|---|---|
+| `pin` | `high` \| `low`: the GPIO input level read by the bus task when it emitted the error. For timeouts this is the line at detection; for edge-triggered errors it is read after the failing edge was drained (µs to ms later) |
+| `ack_age_us` | µs from the bridge's most recent follower-ACK assertion (the edge ISR drove the line low) to this error's `t_us`, saturating at 0. Present only when that assertion is at most 100 000 µs (`STUCK_LOW`) old |
+| `ack_held_us` | how long that ACK held the line: assertion to the release ISR. Present only with `ack_age_us`, and only once the release has run; absent = still asserted when the error was emitted |
+| `pin_high_age_us` | µs from the last time the bus task itself read the pin High to this error's `t_us`, saturating at 0 and at u32::MAX; absent until the first High read of the boot. The task reads the pin once per loop pass (about once per millisecond), independent of the edge interrupt and of the decoder. For edge-triggered errors `t_us` is the failing edge's time, so 0 can mean the High read came after `t_us` |
+
+Reading a `line_low` at `bit:9` on a frame the bridge acknowledges. The ACK-slot fall is both the
+decoder's last fall and the assertion timestamp, so for the failing slot `ack_age_us` equals
+`dur_us` exactly:
+
+| Evidence | Meaning |
+|---|---|
+| `ack_age_us` absent, or different from `dur_us` (an earlier block's ACK is larger by multiples of 24 000) | the bridge asserted no ACK in the failing slot |
+| `ack_age_us` = `dur_us`; `ack_held_us` absent or above 1 800 | the bridge's own ACK was still held at detection, or was released late (telemetry then shows `ack_late` + 1 and `ack_held_max_us` ≥ `dur_us`) |
+| `ack_age_us` = `dur_us`; `ack_held_us` near 1 500; `pin_high_age_us` ≥ `dur_us` | released on time, yet the task never read the line High after the fall: another device held it |
+| `ack_age_us` = `dur_us`; `ack_held_us` near 1 500; `pin_high_age_us` < `dur_us` | the line went High after the fall and no edge reached the decoder: edges were lost |
+
+`pin` alone separates the last two rows only on a final block (EOM low phase near 600): after a
+good ACK on any other block the initiator keeps sending, so the line can be low again at
+detection. The task's High reads are about a millisecond apart; a High read proves the line
+rose, while all-low reads over one detection interval make a held line likely, not certain.
+The ISRs publish the ACK evidence without locks; a second ACK between the reads can mix two
+assertions. It is diagnostic, not a protocol guarantee.
+
 ### 5.4 `line` — bus line state changes
 
 ```json
@@ -312,7 +349,7 @@ Emitted on change only; current values are mirrored in `status`.
 
 ```json
 {"t_us":60000123,"boot":3,"rssi":-58,"link_count":1,"heap_free":168000,"heap_min":150000,
- "rx":{"frames":1531,"errors":2,"acked_by_us":303},
+ "rx":{"frames":1531,"errors":2,"acked_by_us":303,"ack_late":0,"ack_held_max_us":1512,"edges_lost":0},
  "tx":{"host":765,"local":120,"ack":740,"nack":37,"arb_lost":3,"line_error":0,"busy":0,"rejected":1,
        "retransmits":12,"origin_missing":0,"sample_late":0,"launch_rejected":0,
        "echo_error":0,"edge_overrun":0,"driven_low_mismatch":0},
@@ -326,6 +363,12 @@ the dashboard bus-health view.
 `heap_largest` is the largest contiguous `MALLOC_CAP_8BIT` free block, in bytes
 (optional; older telemetry omits it). Compare it with `heap_free` to distinguish
 fragmentation from total exhaustion. New firmware always includes it.
+`rx.ack_late`, `rx.ack_held_max_us` and `rx.edges_lost` (added 2026-11-16; optional, older
+telemetry omits them) are measured in the interrupt handlers, independent of the decoder:
+`ack_held_max_us` is the longest follower-ACK hold this boot (assertion to release ISR, nominal
+1 500), `ack_late` counts holds longer than `DATA_LOW_0.max` (1 800 µs), and `edges_lost` counts
+edges the ISR dropped because its ring was full (each such batch also resets the decoder and is
+included in `rx.errors`).
 At 60 seconds after boot, firmware emits one `stack_hwm task=<name> hwm=<bytes>`
 record per live FreeRTOS task into the serial log and `/api/log`; the measurement
 includes startup's deepest path, not just the current stack depth. Tasks that

@@ -84,6 +84,14 @@ struct Object {
     #[serde(default)]
     hist: Option<heapless::Vec<u32, 8>>,
     #[serde(default)]
+    pin: Option<crate::Level>,
+    #[serde(default)]
+    pin_high_age_us: Option<u32>,
+    #[serde(default)]
+    ack_age_us: Option<u32>,
+    #[serde(default)]
+    ack_held_us: Option<u32>,
+    #[serde(default)]
     bus: Option<BusState>,
     #[serde(default)]
     hpd: Option<bool>,
@@ -155,6 +163,10 @@ impl<'de> Deserialize<'de> for BusEvent {
                 dur_us: object.dur_us,
                 gap_us: object.gap_us,
                 bit: object.bit,
+                pin: object.pin,
+                pin_high_age_us: object.pin_high_age_us,
+                ack_age_us: object.ack_age_us,
+                ack_held_us: object.ack_held_us,
                 hist: object.hist,
             }),
             EventKind::Line => Ok(Self::Line {

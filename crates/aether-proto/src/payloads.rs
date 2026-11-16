@@ -391,6 +391,18 @@ pub enum BusEvent {
         /// Up to eight preceding inter-edge intervals, oldest first.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hist: Option<heapless::Vec<u32, 8>>,
+        /// GPIO input sampled by firmware when emitting the error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<Level>,
+        /// Age of the bus task's last High GPIO read, saturated to `u32`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin_high_age_us: Option<u32>,
+        /// Age of the most recent follower ACK, at most `STUCK_LOW`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack_age_us: Option<u32>,
+        /// Assertion-to-release duration; absent while the ACK remains held.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack_held_us: Option<u32>,
     },
     /// Electrical state change or completed logical-address allocation.
     Line {
@@ -419,6 +431,15 @@ pub struct RxCounters {
     pub errors: u64,
     /// Frames acknowledged by this bridge.
     pub acked_by_us: u64,
+    /// Follower ACK holds longer than `DATA_LOW_0.max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_late: Option<u64>,
+    /// Longest completed follower ACK hold this boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_held_max_us: Option<u32>,
+    /// GPIO edges dropped because the ISR ring was full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges_lost: Option<u64>,
 }
 
 /// Per-boot transmit counters.
