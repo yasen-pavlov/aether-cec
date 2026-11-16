@@ -527,7 +527,9 @@ impl Hardware {
         self.interrupts.ack_active.store(false, Ordering::Release);
         // Do not report a hand-released state-1 ACK as still held. This also
         // drops a completed state-2 record before Runner's suspend drain.
-        self.interrupts.ack_evidence_state.store(0, Ordering::Release);
+        self.interrupts
+            .ack_evidence_state
+            .store(0, Ordering::Release);
     }
 
     pub fn upload_wait(&self) {

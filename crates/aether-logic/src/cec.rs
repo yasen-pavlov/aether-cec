@@ -16,10 +16,10 @@ pub fn ack_in_window(now_us: u64, fall_at_us: u64) -> bool {
 
 /// Recent follower-ACK evidence at an error's timestamp. A future assertion
 /// saturates to age zero; an unreleased ACK has no completed hold duration.
-// Keep the optional timestamp/tuple inside firmware callers, not across the
-// bench-affected Xtensa stack-argument ABI.
+// Force inlining only on Xtensa: keep aggregates inside firmware callers,
+// but preserve host coverage attribution across integration-test crates.
 #[allow(clippy::inline_always)]
-#[inline(always)]
+#[cfg_attr(target_arch = "xtensa", inline(always))]
 pub fn ack_evidence(
     t_us: u64,
     assert_us: Option<u64>,
@@ -36,16 +36,16 @@ pub fn ack_evidence(
 }
 
 /// Age of the task's last High GPIO read, absent until that first observation.
-/// Inlined to keep the optional timestamp inside the firmware caller's ABI.
+/// Forced inline on Xtensa to keep the optional timestamp inside the caller's ABI.
 #[allow(clippy::inline_always)]
-#[inline(always)]
+#[cfg_attr(target_arch = "xtensa", inline(always))]
 pub fn pin_high_age(t_us: u64, last_high_us: Option<u64>) -> Option<u32> {
     last_high_us.map(|last_high| u32::try_from(t_us.saturating_sub(last_high)).unwrap_or(u32::MAX))
 }
 
 /// Strict upper accepted data-zero boundary, also used by the release ISR.
 #[allow(clippy::inline_always)]
-#[inline(always)]
+#[cfg_attr(target_arch = "xtensa", inline(always))]
 pub fn ack_late(held_us: u32) -> bool {
     held_us > timing::DATA_LOW_0.max
 }

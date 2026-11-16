@@ -350,15 +350,17 @@ submission, bounded MQTT reassembly, CEC executor primitives and runtime snapsho
 held_us: Option<u32>) -> (Option<u32>, Option<u32>)` filters ACK evidence:
 age saturates at zero and is included through `timing::STUCK_LOW`, inclusive;
 held duration is included only with a recent assertion and a completed release.
-The evidence helper is always inlined to avoid passing its optional timestamp
-and tuple across the affected Xtensa stack-argument ABI.
+The evidence helper is forced inline on Xtensa to avoid passing its optional
+timestamp and tuple across the affected stack-argument ABI; host builds use an
+ordinary function so integration-test coverage is attributed correctly.
 `ack_late(held_us: u32) -> bool` uses the strict `timing::DATA_LOW_0.max` boundary
-and is always inlined into the release ISR.
+and is forced inline on Xtensa so the release ISR cannot call flash code.
 
 `pin_high_age(t_us: u64, last_high_us: Option<u64>) -> Option<u32>` returns
 the saturating age of the task's last High GPIO read (clamped to `u32::MAX`),
-or `None` before that first observation. It is always inlined for the same ABI
-reason. `Runner.last_pin_high_us: Option<u64>` retains this observation:
+or `None` before that first observation. It is forced inline on Xtensa for the
+same ABI reason, but remains an ordinary host function for coverage attribution.
+`Runner.last_pin_high_us: Option<u64>` retains this observation:
 `drain` reads the GPIO immediately after its existing `now` read and records
 `now` only when High, before draining any edges. Error emission uses the
 error's `t_us` for the age, independently of decoder edges.
