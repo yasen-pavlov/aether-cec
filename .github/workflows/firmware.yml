@@ -34,7 +34,7 @@ jobs:
           key: esp-1.97.0.0
           # ESP-IDF sources and tools (ESP_IDF_TOOLS_INSTALL_DIR = "global").
           cache-directories: ~/.espressif
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: espflash@4.7.0
       - run: cargo fmt --check
