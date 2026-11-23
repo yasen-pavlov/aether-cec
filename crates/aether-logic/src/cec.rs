@@ -14,25 +14,106 @@ pub fn ack_in_window(now_us: u64, fall_at_us: u64) -> bool {
         && now_us <= fall_at_us.saturating_add(u64::from(timing::DATA_TOTAL.max - timing::BIT))
 }
 
-/// Recent follower-ACK evidence at an error's timestamp. A future assertion
-/// saturates to age zero; an unreleased ACK has no completed hold duration.
-// Force inlining only on Xtensa: keep aggregates inside firmware callers,
-// but preserve host coverage attribution across integration-test crates.
+/// Raw reads from one timer-hardware critical section, in capture order.
+/// State words are 0 (unavailable), 1 (held), or 2 (released).
+#[derive(Clone, Debug)]
+pub struct AckCapture {
+    /// ACK evidence state before the timer reads.
+    pub state_before: u32,
+    /// Assertion timestamp before the timer reads.
+    pub assert_before_us: u64,
+    /// Capture time, using the timer's microsecond timebase.
+    pub now_us: u64,
+    /// Masked LACT interrupt status.
+    pub interrupt: bool,
+    /// LACT alarm enable.
+    pub alarm_enabled: bool,
+    /// Hardware alarm register, at two ticks per microsecond on ESP32.
+    pub alarm_ticks: u64,
+    /// Cached TASK-dispatch deadline; `u64::MAX` means absent.
+    pub task_deadline_us: u64,
+    /// Cached ISR-dispatch deadline; `u64::MAX` means absent.
+    pub isr_deadline_us: u64,
+    /// ACK evidence state after the timer reads.
+    pub state_after: u32,
+    /// Assertion timestamp after the timer reads.
+    pub assert_after_us: u64,
+    /// Completed hold duration, read in the same section.
+    pub held_us: u32,
+}
+
+/// Coherent, optional decoder-error evidence. Timer fields are a single group,
+/// except that each cached deadline can independently be absent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AckEvidence {
+    /// Event time minus the captured assertion, saturating at zero.
+    pub ack_age_us: Option<u32>,
+    /// Completed hold duration; absent while held.
+    pub ack_held_us: Option<u32>,
+    /// Presence marker and masked LACT interrupt status.
+    pub tmr_int: Option<bool>,
+    /// Captured alarm enable bit.
+    pub tmr_en: Option<bool>,
+    /// Hardware alarm minus capture time, saturated to `i32`.
+    pub tmr_alarm_in_us: Option<i32>,
+    /// Cached ISR deadline minus capture time, saturated to `i32`.
+    pub tmr_isr_in_us: Option<i32>,
+    /// Cached TASK deadline minus capture time, saturated to `i32`.
+    pub tmr_task_in_us: Option<i32>,
+    /// Assertion plus `ACK_LOW` minus capture time, saturated to `i32`.
+    pub ack_due_in_us: Option<i32>,
+}
+
+/// Interpret one capture without I/O. Existing ages use the event-age cutoff;
+/// only the timer group also requires a recent assertion at capture time.
+/// Inlined only on Xtensa so no aggregate crosses the firmware call boundary.
 #[allow(clippy::inline_always)]
 #[cfg_attr(target_arch = "xtensa", inline(always))]
-pub fn ack_evidence(
-    t_us: u64,
-    assert_us: Option<u64>,
-    held_us: Option<u32>,
-) -> (Option<u32>, Option<u32>) {
-    let Some(assert_us) = assert_us else {
-        return (None, None);
-    };
-    let age = t_us.saturating_sub(assert_us);
-    if age > u64::from(timing::STUCK_LOW) {
-        return (None, None);
+pub fn ack_evidence(t_us: u64, capture: &AckCapture, evidence: &mut AckEvidence) {
+    *evidence = AckEvidence::default();
+    if !matches!(capture.state_before, 1 | 2)
+        || capture.state_before != capture.state_after
+        || capture.assert_before_us != capture.assert_after_us
+    {
+        return;
     }
-    (u32::try_from(age).ok(), held_us)
+    let age = t_us.saturating_sub(capture.assert_before_us);
+    if age > u64::from(timing::STUCK_LOW) {
+        return;
+    }
+    evidence.ack_age_us = u32::try_from(age).ok();
+    if capture.state_before == 2 {
+        evidence.ack_held_us = Some(capture.held_us);
+        return;
+    }
+    if capture.now_us.saturating_sub(capture.assert_before_us) > u64::from(timing::STUCK_LOW) {
+        return;
+    }
+    evidence.tmr_int = Some(capture.interrupt);
+    evidence.tmr_en = Some(capture.alarm_enabled);
+    // Match IDF's counter-to-us conversion (LACT_TICKS_PER_US = 2).
+    evidence.tmr_alarm_in_us = Some(deadline_in_us(capture.alarm_ticks / 2, capture.now_us));
+    evidence.tmr_isr_in_us = (capture.isr_deadline_us != u64::MAX)
+        .then(|| deadline_in_us(capture.isr_deadline_us, capture.now_us));
+    evidence.tmr_task_in_us = (capture.task_deadline_us != u64::MAX)
+        .then(|| deadline_in_us(capture.task_deadline_us, capture.now_us));
+    evidence.ack_due_in_us = Some(deadline_in_us(
+        capture
+            .assert_before_us
+            .saturating_add(u64::from(timing::ACK_LOW)),
+        capture.now_us,
+    ));
+}
+
+/// Signed deadline distance without overflowing an intermediate signed integer.
+#[allow(clippy::inline_always)]
+#[cfg_attr(target_arch = "xtensa", inline(always))]
+fn deadline_in_us(deadline: u64, now: u64) -> i32 {
+    if deadline >= now {
+        i32::try_from(deadline - now).unwrap_or(i32::MAX)
+    } else {
+        i32::try_from(now - deadline).map_or(i32::MIN, |distance| -distance)
+    }
 }
 
 /// Age of the task's last High GPIO read, absent until that first observation.

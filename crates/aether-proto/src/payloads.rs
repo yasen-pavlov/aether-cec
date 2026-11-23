@@ -403,6 +403,24 @@ pub enum BusEvent {
         /// Assertion-to-release duration; absent while the ACK remains held.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ack_held_us: Option<u32>,
+        /// LACT masked interrupt status; presence marks a coherent timer capture.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tmr_int: Option<bool>,
+        /// LACT alarm enable bit at the capture.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tmr_en: Option<bool>,
+        /// Hardware alarm minus capture time, microseconds saturated to `i32`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tmr_alarm_in_us: Option<i32>,
+        /// Cached ISR deadline minus capture time; absent for `UINT64_MAX`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tmr_isr_in_us: Option<i32>,
+        /// Cached TASK deadline minus capture time; absent for `UINT64_MAX`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tmr_task_in_us: Option<i32>,
+        /// ACK assertion plus `ACK_LOW` minus capture time, saturated to `i32`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack_due_in_us: Option<i32>,
     },
     /// Electrical state change or completed logical-address allocation.
     Line {

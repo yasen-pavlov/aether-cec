@@ -529,6 +529,8 @@ fn decoder_error_evidence_and_overrun_have_exact_golden_json() {
         r#"{"ev":"err","seq":829,"t_us":49000000,"kind":"line_low","pin":"low","ack_age_us":5040}"#,
         r#"{"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","pin":"high","ack_age_us":5040,"ack_held_us":1512}"#,
         r#"{"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","from":8,"to":0,"bits":16,"same_level":false,"dur_us":5042,"gap_us":0,"bit":9,"hist":[604,1796,1504,896,604,1796,1507,893],"pin":"low","pin_high_age_us":5310,"ack_age_us":5042}"#,
+        r#"{"ev":"err","seq":831,"t_us":49000000,"kind":"line_low","ack_age_us":5042,"tmr_int":true,"tmr_en":false,"tmr_alarm_in_us":-3540,"tmr_isr_in_us":-3538,"tmr_task_in_us":2147483647,"ack_due_in_us":-3542}"#,
+        r#"{"ev":"err","seq":832,"t_us":49000000,"kind":"bit_timing","ack_age_us":2000,"tmr_int":false,"tmr_en":true,"tmr_alarm_in_us":-2147483648,"ack_due_in_us":-500}"#,
     ] {
         let event: BusEvent = serde_json::from_str(text).unwrap();
         assert_eq!(serde_json::to_string(&event).unwrap(), text);
@@ -545,6 +547,12 @@ fn decoder_error_history_is_bounded_and_levels_are_typed() {
         r#""hist":[1,2,3,4,5,6,7,8,9]"#,
         r#""hist":[4294967296]"#,
         r#""level":"floating""#,
+        r#""tmr_int":1"#,
+        r#""tmr_en":"true""#,
+        r#""tmr_alarm_in_us":2147483648"#,
+        r#""tmr_isr_in_us":-2147483649"#,
+        r#""tmr_task_in_us":2147483648"#,
+        r#""ack_due_in_us":-2147483649"#,
     ] {
         let text = format!(r#"{{"ev":"err","seq":1,"t_us":0,"kind":"bit_timing",{extra}}}"#);
         assert!(serde_json::from_str::<BusEvent>(&text).is_err(), "{text}");

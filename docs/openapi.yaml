@@ -960,6 +960,24 @@ components:
         cases only on a final block; otherwise the initiator keeps transmitting.
         A post-release ISR pin read was rejected because the open-drain line is
         still rising 1-2 microseconds after release and healthy ACKs would read low.
+        ACK state/assertion and timer registers/deadlines are captured together
+        under the recursive timer hardware lock, with state/assertion rechecked.
+        Timer evidence occurs only for a held ACK at most STUCK_LOW old at capture.
+        tmr_int marks the group; each cached deadline is absent for UINT64_MAX.
+        All signed distances use capture now, not the event timestamp, saturating
+        to i32. Use 10 microseconds as a reading aid because timer arming samples
+        time a few microseconds after assertion, plus possible lock wait; this
+        is not a bound. Firmware publishes raw values without classification.
+        The interrupt is shared by all deadlines, so pending does not identify
+        the ACK by itself. An earlier TASK deadline may own the hardware alarm;
+        an absent TASK deadline while TASK timers are armed is notable.
+        With tmr_int false and the ISR deadline matching the release deadline,
+        a hardware alarm value that does not match indicates bookkeeping intact
+        but hardware not programmed for that deadline. tmr_en false alone does
+        not: if the alarm value matches and has passed, its enable bit may simply
+        have cleared itself when the alarm fired. Read tmr_en with tmr_int.
+        Self-clearing is documented for the group's general-purpose timers,
+        but is unverified for LACT, whose IDF register description is reserved.
       properties:
         ev: {const: err, description: Decode-error/overrun discriminator.}
         seq: {type: integer, minimum: 0, maximum: 4294967295, description: Per-boot sequence shared by all bus events.}
@@ -984,12 +1002,33 @@ components:
           description: Previous inter-edge microsecond intervals oldest-first, reset at start fall. First may be idle gap; failing interval appears only in gap_us. Optional.
         pin: {type: string, enum: [high, low], description: GPIO input read by the bus task when emitting a decoder error; independent of the edge stream. Optional in older firmware.}
         pin_high_age_us: {type: integer, minimum: 0, maximum: 4294967295, description: Error timestamp minus the last task-side High GPIO read saturating at zero and u32 MAX; absent until the first High read of this boot. Sampled independently of decoder edges on each drain pass.}
-        ack_age_us: {type: integer, minimum: 0, maximum: 100000, description: Error timestamp minus most recent follower ACK assertion saturating at zero; absent if no assertion or older than STUCK_LOW. Lock-free snapshots can mix two assertions.}
+        ack_age_us: {type: integer, minimum: 0, maximum: 100000, description: Error timestamp minus captured follower ACK assertion saturating at zero; absent if state/assertion changed or older than STUCK_LOW at the event. A delayed capture does not alter this cutoff. Coherent with hold and timer evidence.}
         ack_held_us: {type: integer, minimum: 0, maximum: 4294967295, description: Assertion-to-release-ISR duration; present only with ack_age_us and once released. Absent while still held.}
+        tmr_int: {type: boolean, description: LACT masked interrupt status bit at capture; presence marks the coherent held-ACK timer group.}
+        tmr_en: {type: boolean, description: LACT ALARM_EN at capture; present with tmr_int.}
+        tmr_alarm_in_us: {type: integer, minimum: -2147483648, maximum: 2147483647, description: Hardware alarm minus capture counter in microseconds saturating to i32; register ticks divide by two truncating like IDF. Negative means passed.}
+        tmr_isr_in_us: {type: integer, minimum: -2147483648, maximum: 2147483647, description: Cached ISR deadline (timestamp_id index 1) minus capture now saturating to i32; absent for UINT64_MAX or without the group.}
+        tmr_task_in_us: {type: integer, minimum: -2147483648, maximum: 2147483647, description: Cached TASK deadline (timestamp_id index 0) minus capture now saturating to i32; absent for UINT64_MAX or without the group.}
+        ack_due_in_us: {type: integer, minimum: -2147483648, maximum: 2147483647, description: Captured ACK assertion plus ACK_LOW minus capture now saturating to i32; negative means overdue.}
+      dependentRequired:
+        tmr_int: [tmr_en, tmr_alarm_in_us, ack_due_in_us, ack_age_us]
+        tmr_en: [tmr_int]
+        tmr_alarm_in_us: [tmr_int]
+        tmr_isr_in_us: [tmr_int]
+        tmr_task_in_us: [tmr_int]
+        ack_due_in_us: [tmr_int]
+      allOf:
+        - if:
+            required: [tmr_int]
+          then:
+            properties:
+              kind: {enum: [start_bit, bit_timing, eom_missing, line_low]}
+            not: {required: [ack_held_us]}
       examples:
         - {ev: err, seq: 826, t_us: 48900100, kind: bit_timing, from: 4, to: 0, bits: 40, level: low, same_level: false, dur_us: 1900, gap_us: 1170, bit: 8, hist: [1790, 1500, 900, 620, 1780, 1510, 890, 730]}
         - {ev: err, seq: 820, t_us: 48711000, kind: overrun, dropped: 4}
-        - {ev: err, seq: 830, t_us: 49000000, kind: line_low, from: 8, to: 0, bits: 16, same_level: false, dur_us: 5042, gap_us: 0, bit: 9, hist: [604, 1796, 1504, 896, 604, 1796, 1507, 893], pin: low, pin_high_age_us: 5310, ack_age_us: 5042}
+        - {ev: err, seq: 830, t_us: 49000000, kind: line_low, from: 8, to: 0, bits: 16, same_level: false, dur_us: 5042, gap_us: 0, bit: 9, hist: [604, 1796, 1504, 896, 604, 1796, 1507, 893], pin: low, pin_high_age_us: 5310, ack_age_us: 5042, tmr_int: true, tmr_en: false, tmr_alarm_in_us: -3540, tmr_isr_in_us: -3538, tmr_task_in_us: 20000, ack_due_in_us: -3542}
+        - {ev: err, seq: 831, t_us: 49000000, kind: bit_timing, ack_age_us: 2000, tmr_int: false, tmr_en: true, tmr_alarm_in_us: -2147483648, ack_due_in_us: -500}
     Line:
       type: object
       required: [ev, seq, t_us]

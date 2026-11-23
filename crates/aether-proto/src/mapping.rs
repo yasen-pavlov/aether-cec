@@ -55,33 +55,31 @@ impl From<bridge::BusEvent> for BusEvent {
                 to,
                 bits,
                 detail,
-            } => {
-                let kind = match kind {
-                    RxError::StartBit => ErrorKind::StartBit,
-                    RxError::BitTiming => ErrorKind::BitTiming,
-                    RxError::EomMissing => ErrorKind::EomMissing,
-                    RxError::LineLow => ErrorKind::LineLow,
-                };
-                Self::Err {
-                    seq,
-                    t_us,
-                    kind,
-                    from,
-                    to,
-                    bits: Some(bits),
-                    dropped: None,
-                    level: detail.level.map(Into::into),
-                    same_level: Some(detail.same_level),
-                    dur_us: Some(detail.duration_us),
-                    gap_us: Some(detail.gap_us),
-                    bit: detail.bit,
-                    hist: Some(detail.history),
-                    pin: None,
-                    pin_high_age_us: None,
-                    ack_age_us: None,
-                    ack_held_us: None,
-                }
-            }
+            } => Self::Err {
+                seq,
+                t_us,
+                kind: error_kind(kind),
+                from,
+                to,
+                bits: Some(bits),
+                dropped: None,
+                level: detail.level.map(Into::into),
+                same_level: Some(detail.same_level),
+                dur_us: Some(detail.duration_us),
+                gap_us: Some(detail.gap_us),
+                bit: detail.bit,
+                hist: Some(detail.history),
+                pin: None,
+                pin_high_age_us: None,
+                ack_age_us: None,
+                ack_held_us: None,
+                tmr_int: None,
+                tmr_en: None,
+                tmr_alarm_in_us: None,
+                tmr_isr_in_us: None,
+                tmr_task_in_us: None,
+                ack_due_in_us: None,
+            },
             bridge::BusEvent::Line {
                 seq,
                 t_us,
@@ -105,6 +103,15 @@ impl From<bridge::BusEvent> for BusEvent {
                 la: Some(la),
             },
         }
+    }
+}
+
+fn error_kind(kind: RxError) -> ErrorKind {
+    match kind {
+        RxError::StartBit => ErrorKind::StartBit,
+        RxError::BitTiming => ErrorKind::BitTiming,
+        RxError::EomMissing => ErrorKind::EomMissing,
+        RxError::LineLow => ErrorKind::LineLow,
     }
 }
 
