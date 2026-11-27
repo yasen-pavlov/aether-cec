@@ -15,6 +15,9 @@ fn main() {
         "esp_idf_version_patch_at_least_5_3_2",
         "esp_idf_gpio_ctrl_func_in_iram",
         "esp_idf_rmt_isr_iram_safe",
+        "esp_idf_gptimer_ctrl_func_in_iram",
+        "esp_idf_gptimer_isr_iram_safe",
+        "esp_idf_gptimer_isr_handler_in_iram",
         "esp_idf_esp_timer_supports_isr_dispatch_method",
         "esp_idf_esp_timer_isr_affinity_cpu1",
     ] {
