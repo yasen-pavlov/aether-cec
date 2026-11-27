@@ -71,8 +71,9 @@ the in-tree target directory and can silently skip `sdkconfig.defaults` otherwis
   PRs; SonarQube Cloud with the coverage report.
 - Release: `git tag -s vX.Y.Z` on `main` and push the tag. `release.yml` builds
   the firmware with that version and publishes OTA and factory images, the ELF,
-  checksums and a provenance attestation. A CI-built image is still bench-tested
-  before it replaces the bridge in the room.
+  checksums and a provenance attestation. There is one board and no spare, so
+  an image is deployed to the bridge by OTA in place once CI is green; there is
+  no separate bench boot. An image that never reports status is rolled back.
 - SonarQube Cloud analyses the whole repository (workflows and scripts
   included); `sonar-project.properties` only excludes the embedded console page
   and the design canvases. Third-party actions are pinned to commit SHAs with
@@ -82,7 +83,8 @@ the in-tree target directory and can silently skip `sdkconfig.defaults` otherwis
   crate the firmware also uses (`heapless`, `serde`, `serde_json`), apply the
   same version in a follow-up PR with `cargo update -p <crate> --precise <ver>`
   in `firmware/`, so the host tests exercise the versions the firmware ships.
-  Other firmware dependencies are bumped by hand, with a bench test.
+  Other firmware dependencies are bumped by hand and checked on the bridge
+  after the OTA.
 - When a firmware function is split, check stack frames, not only behaviour:
   compare the `entry` frame of the task's loop function plus its largest new
   helper against the previous image (decisions.md, 2026-11-15).
