@@ -336,6 +336,12 @@ therefore describe one ACK, never a mixture of two assertions.
 
 Timer evidence (added 2026-11-22; optional, omitted by older firmware):
 
+From the 2026-11-27 dedicated-release firmware onward, a separate GPTimer
+schedules follower-ACK release. The `tmr_*` group still describes `esp_timer`
+(TX sampling and bus-task wake), not the release deadline; the reading table
+below applies to older shared-release firmware. `ack_due_in_us`, `ack_age_us`,
+`ack_held_us`, `ack_late` and `ack_held_max_us` keep their meaning.
+
 | Key | Type | Meaning |
 |---|---|---|
 | `tmr_int` | bool | LACT masked interrupt status bit set at capture; presence marks the captured group |

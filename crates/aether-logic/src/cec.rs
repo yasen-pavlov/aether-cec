@@ -14,6 +14,25 @@ pub fn ack_in_window(now_us: u64, fall_at_us: u64) -> bool {
         && now_us <= fall_at_us.saturating_add(u64::from(timing::DATA_TOTAL.max - timing::BIT))
 }
 
+/// Re-arm an early follower-ACK alarm, allowing 10 us of clock/ISR tolerance.
+/// Missing/invalid timestamps and zero or over-range remainders release instead.
+#[allow(clippy::inline_always)]
+#[cfg_attr(target_arch = "xtensa", inline(always))]
+pub fn ack_release_remainder(now_us: u64, assertion_us: Option<u64>) -> Option<u32> {
+    let assertion = assertion_us?;
+    let remainder = assertion
+        .saturating_add(u64::from(timing::ACK_LOW))
+        .saturating_sub(now_us);
+    if !(1..=u64::from(timing::ACK_LOW)).contains(&remainder)
+        || now_us < assertion
+        || remainder <= 10
+    {
+        None
+    } else {
+        u32::try_from(remainder).ok()
+    }
+}
+
 /// Raw reads from one timer-hardware critical section, in capture order.
 /// State words are 0 (unavailable), 1 (held), or 2 (released).
 #[derive(Clone, Debug)]

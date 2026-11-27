@@ -13,7 +13,8 @@ what, why).
   every payload in `docs/protocol.md`. `no_std` by default, `std` feature for hosts.
   Depends on `cec-core` for `Frame`/`TxStatus`; never the other way round.
 - `firmware/`: esp-idf `std` binary for the ESP32. Thin executor of `cec-core`
-  actions on RMT + a one-shot timer; Wi-Fi, esp-mqtt, NVS, serial CLI, OTA.
+  actions on RMT + dedicated GPTimer follower-ACK release; esp_timer handles TX
+  sampling and bus-task wakes. Wi-Fi, esp-mqtt, NVS, serial CLI, OTA.
   Standalone package, not a workspace member: it needs the Xtensa toolchain and
   must not break host-side `cargo test` at the root. CI builds it in its own job.
 - `tests/fixtures/`: frames distilled from real bus traces (`from`,`to`,`data`,`ack`

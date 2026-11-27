@@ -2,6 +2,7 @@
 //! for the lifetime of the bus task; callbacks never borrow movable task data.
 use aether_logic::cec::{
     AckCapture, AckEvidence, Block, EdgeRing, ack_evidence, ack_in_window, ack_late,
+    ack_release_remainder,
 };
 use cec_core::{
     rx::{Edge, Level},
@@ -40,10 +41,15 @@ const LACT_INT: u32 = 1 << 3;
 #[cfg(not(all(
     esp_idf_gpio_ctrl_func_in_iram,
     esp_idf_rmt_isr_iram_safe,
+    esp_idf_gptimer_ctrl_func_in_iram,
+    esp_idf_gptimer_isr_iram_safe,
+    esp_idf_gptimer_isr_handler_in_iram,
     esp_idf_esp_timer_supports_isr_dispatch_method,
     esp_idf_esp_timer_isr_affinity_cpu1
 )))]
-compile_error!("CEC interrupts require GPIO/RMT IRAM safety and esp_timer ISR dispatch on core 1");
+compile_error!(
+    "CEC interrupts require GPIO/RMT/GPTimer IRAM safety and esp_timer ISR dispatch on core 1"
+);
 
 pub struct Interrupts {
     // ESP32-WROOM has no PSRAM: this boxed context and both rings are internal
@@ -67,7 +73,7 @@ pub struct Interrupts {
     ack_held_us: AtomicU32,
     ack_held_max_us: AtomicU32,
     ack_late: AtomicU32,
-    ack_release: sys::esp_timer_handle_t,
+    ack_timer: sys::gptimer_handle_t,
     sample_timer: sys::esp_timer_handle_t,
     wake_timer: sys::esp_timer_handle_t,
 }
@@ -98,6 +104,23 @@ unsafe fn notify(context: &Interrupts, timer: bool) {
         }
     }
 }
+
+// Both callers run at level 3 on core 1, so they cannot interrupt each other.
+// The stack config is internal DRAM. Stop/reset/reprogram/start works whether
+// the previous one-shot fired, was suspended, or is still counting.
+#[inline(always)]
+unsafe fn arm_ack_timer(timer: sys::gptimer_handle_t, delay_us: u32) -> bool {
+    // All-zero C fields mean no reload. Bindgen's derived Default calls flash
+    // array-default helpers with this toolchain, so initialize directly here.
+    let mut alarm: sys::gptimer_alarm_config_t = unsafe { core::mem::zeroed() };
+    alarm.alarm_count = u64::from(delay_us);
+    unsafe {
+        sys::gptimer_stop(timer) == sys::ESP_OK
+            && sys::gptimer_set_raw_count(timer, 0) == sys::ESP_OK
+            && sys::gptimer_set_alarm_action(timer, &alarm) == sys::ESP_OK
+            && sys::gptimer_start(timer) == sys::ESP_OK
+    }
+}
 #[unsafe(link_section = ".iram1.text")]
 unsafe extern "C" fn edge_isr(arg: *mut core::ffi::c_void) {
     let context = unsafe { &*arg.cast::<Interrupts>() };
@@ -118,25 +141,22 @@ unsafe extern "C" fn edge_isr(arg: *mut core::ffi::c_void) {
                 sys::gpio_set_level(context.pin, 0);
             }
             context.ack_active.store(true, Ordering::Release);
-            // IDF 5.4.2 esp_timer.c:180/294/376 places start_once, insertion
-            // and locking in IRAM unconditionally; no ESP_TIMER_IN_IRAM exists.
-            if unsafe { sys::esp_timer_start_once(context.ack_release, u64::from(timing::ACK_LOW)) }
-                != sys::ESP_OK
-            {
+            // Publish the assertion before enabling any alarm. Equal-priority
+            // GPIO/GPTimer interrupts cannot nest during this publication.
+            context.ack_evidence_state.store(0, Ordering::Release);
+            context.ack_assert_low.store(now as u32, Ordering::Relaxed);
+            context
+                .ack_assert_high
+                .store((now >> 32) as u32, Ordering::Relaxed);
+            context.ack_evidence_state.store(1, Ordering::Release);
+            if !unsafe { arm_ack_timer(context.ack_timer, timing::ACK_LOW) } {
                 unsafe {
                     sys::gpio_set_level(context.pin, 1);
                 }
                 context.ack_active.store(false, Ordering::Release);
+                context.ack_evidence_state.store(0, Ordering::Release);
             } else {
                 context.ack_count.fetch_add(1, Ordering::Relaxed);
-                // Only observable by a reader on another core or above level 3;
-                // same-core task/timer readers cannot interrupt this publication.
-                context.ack_evidence_state.store(0, Ordering::Release);
-                context.ack_assert_low.store(now as u32, Ordering::Relaxed);
-                context
-                    .ack_assert_high
-                    .store((now >> 32) as u32, Ordering::Relaxed);
-                context.ack_evidence_state.store(1, Ordering::Release);
             }
         }
     }
@@ -146,8 +166,25 @@ unsafe extern "C" fn edge_isr(arg: *mut core::ffi::c_void) {
     }
 }
 #[unsafe(link_section = ".iram1.text")]
-unsafe extern "C" fn release_isr(arg: *mut core::ffi::c_void) {
+unsafe extern "C" fn release_isr(
+    timer: sys::gptimer_handle_t,
+    _event: *const sys::gptimer_alarm_event_data_t,
+    arg: *mut core::ffi::c_void,
+) -> bool {
     let context = unsafe { &*arg.cast::<Interrupts>() };
+    if context.ack_active.load(Ordering::Acquire) {
+        let assertion = (context.ack_evidence_state.load(Ordering::Acquire) == 1).then(|| {
+            u64::from(context.ack_assert_low.load(Ordering::Relaxed))
+                | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32)
+        });
+        if let Some(remainder) =
+            ack_release_remainder(unsafe { sys::esp_timer_get_time() as u64 }, assertion)
+        {
+            if unsafe { arm_ack_timer(timer, remainder) } {
+                return false;
+            }
+        }
+    }
     unsafe {
         sys::gpio_set_level(context.pin, 1);
     }
@@ -168,6 +205,7 @@ unsafe extern "C" fn release_isr(arg: *mut core::ffi::c_void) {
             context.ack_late.fetch_add(1, Ordering::Relaxed);
         }
     }
+    false
 }
 #[unsafe(link_section = ".iram1.text")]
 unsafe extern "C" fn sample_isr(arg: *mut core::ffi::c_void) {
@@ -261,6 +299,7 @@ pub struct Hardware {
     routed: bool,
     enabled: bool,
     service_owned: bool,
+    ack_timer_enabled: bool,
 }
 // SAFETY: the handles are owned exclusively by the bus task after construction
 // on main; esp-idf driver handles are not core-affine.
@@ -288,7 +327,7 @@ impl Hardware {
                 ack_held_us: AtomicU32::new(0),
                 ack_held_max_us: AtomicU32::new(0),
                 ack_late: AtomicU32::new(0),
-                ack_release: core::ptr::null_mut(),
+                ack_timer: core::ptr::null_mut(),
                 sample_timer: core::ptr::null_mut(),
                 wake_timer: core::ptr::null_mut(),
             })),
@@ -300,6 +339,7 @@ impl Hardware {
             routed: false,
             service_owned: false,
             enabled: false,
+            ack_timer_enabled: false,
         };
         unsafe {
             sys::esp!(sys::gpio_set_level(pin, 1))?;
@@ -373,12 +413,19 @@ impl Hardware {
             sys::esp!(sys::gpio_hold_dis(pin))?;
             let arg = (&mut **hw.interrupts as *mut Interrupts).cast();
             let interrupts = &mut **hw.interrupts;
+            let cfg = sys::gptimer_config_t {
+                clk_src: sys::soc_periph_gptimer_clk_src_t_GPTIMER_CLK_SRC_DEFAULT,
+                direction: sys::gptimer_count_direction_t_GPTIMER_COUNT_UP,
+                resolution_hz: 1_000_000,
+                intr_priority: 3,
+                ..Default::default()
+            };
+            sys::esp!(sys::gptimer_new_timer(&cfg, &mut interrupts.ack_timer))?;
             for (callback, handle) in [
                 (
-                    release_isr as unsafe extern "C" fn(*mut core::ffi::c_void),
-                    &mut interrupts.ack_release,
+                    sample_isr as unsafe extern "C" fn(*mut core::ffi::c_void),
+                    &mut interrupts.sample_timer,
                 ),
-                (sample_isr, &mut interrupts.sample_timer),
                 (wake_isr, &mut interrupts.wake_timer),
             ] {
                 let args = sys::esp_timer_create_args_t {
@@ -416,7 +463,21 @@ impl Hardware {
             ))?;
         }
         self.service_owned = true;
+        // IDF allocates the GPTimer interrupt lazily at callback registration;
+        // register and enable here, on the core-1 bus task, before GPIO edges.
         let arg = (interrupts as *mut Interrupts).cast();
+        let callbacks = sys::gptimer_event_callbacks_t {
+            on_alarm: Some(release_isr),
+        };
+        unsafe {
+            sys::esp!(sys::gptimer_register_event_callbacks(
+                interrupts.ack_timer,
+                &callbacks,
+                arg
+            ))?;
+            sys::esp!(sys::gptimer_enable(interrupts.ack_timer))?;
+        }
+        self.ack_timer_enabled = true;
         sys::esp!(unsafe { sys::gpio_isr_handler_add(interrupts.pin, Some(edge_isr), arg) })?;
         Ok(())
     }
@@ -592,17 +653,17 @@ impl Hardware {
     /// OTA is passive, including an ACK armed before the upload began.
     pub fn suspend(&mut self) {
         self.interrupts.ack_armed.store(false, Ordering::Release);
-        self.abort();
-        unsafe {
-            sys::esp_timer_stop(self.interrupts.ack_release);
-            sys::gpio_set_level(self.interrupts.pin, 1);
-        }
-        self.interrupts.ack_active.store(false, Ordering::Release);
-        // Do not report a hand-released state-1 ACK as still held. This also
-        // drops a completed state-2 record before Runner's suspend drain.
+        // Invalidate before stopping: a pending alarm delivered on return from
+        // the driver's critical section must not re-arm during suspension.
         self.interrupts
             .ack_evidence_state
             .store(0, Ordering::Release);
+        self.interrupts.ack_active.store(false, Ordering::Release);
+        self.abort();
+        unsafe {
+            sys::gptimer_stop(self.interrupts.ack_timer);
+            sys::gpio_set_level(self.interrupts.pin, 1);
+        }
     }
 
     pub fn upload_wait(&self) {
@@ -671,11 +732,18 @@ impl Drop for Hardware {
                 sys::gpio_isr_handler_remove(self.interrupts.pin);
                 sys::gpio_uninstall_isr_service();
             }
-            for timer in [
-                self.interrupts.ack_release,
-                self.interrupts.sample_timer,
-                self.interrupts.wake_timer,
-            ] {
+            self.interrupts
+                .ack_evidence_state
+                .store(0, Ordering::Release);
+            self.interrupts.ack_active.store(false, Ordering::Release);
+            if !self.interrupts.ack_timer.is_null() {
+                if self.ack_timer_enabled {
+                    sys::gptimer_stop(self.interrupts.ack_timer);
+                    sys::gptimer_disable(self.interrupts.ack_timer);
+                }
+                sys::gptimer_del_timer(self.interrupts.ack_timer);
+            }
+            for timer in [self.interrupts.sample_timer, self.interrupts.wake_timer] {
                 if !timer.is_null() {
                     sys::esp_timer_stop(timer);
                     sys::esp_timer_delete(timer);

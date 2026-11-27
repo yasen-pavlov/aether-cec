@@ -1184,6 +1184,40 @@ fn ack_late_starts_above_the_accepted_zero_low_window() {
 }
 
 #[test]
+fn early_ack_alarm_rearms_only_a_valid_remainder_outside_tolerance() {
+    use aether_logic::cec::ack_release_remainder;
+    let assertion = 1_u64 << 33;
+    let due = assertion + u64::from(timing::ACK_LOW);
+    assert_eq!(ack_release_remainder(assertion, None), None);
+    assert_eq!(
+        ack_release_remainder(assertion, Some(assertion)),
+        Some(timing::ACK_LOW)
+    );
+    assert_eq!(
+        ack_release_remainder(assertion + 1, Some(assertion)),
+        Some(timing::ACK_LOW - 1)
+    );
+    assert_eq!(ack_release_remainder(due - 11, Some(assertion)), Some(11));
+    for now in [due - 10, due - 1, due, due + 1, u64::MAX] {
+        assert_eq!(ack_release_remainder(now, Some(assertion)), None);
+    }
+    // Before assertion the remainder is over range; a backwards clock near
+    // u64::MAX must also fail open even when saturating addition hides that.
+    assert_eq!(ack_release_remainder(assertion - 1, Some(assertion)), None);
+    assert_eq!(ack_release_remainder(0, Some(u64::MAX)), None);
+    assert_eq!(
+        ack_release_remainder(u64::MAX - 20, Some(u64::MAX - 19)),
+        None
+    );
+    assert_eq!(
+        ack_release_remainder(u64::MAX - 11, Some(u64::MAX - 20)),
+        Some(11)
+    );
+    assert_eq!(ack_release_remainder(u64::MAX, Some(u64::MAX)), None);
+    assert_eq!(ack_release_remainder(0, Some(0)), Some(timing::ACK_LOW));
+}
+
+#[test]
 fn pin_high_age_is_absent_saturating_and_bounded() {
     use aether_logic::cec::pin_high_age;
     let high = 1_u64 << 33;

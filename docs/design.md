@@ -369,6 +369,13 @@ captures and outputs pass by reference, preserving host coverage attribution.
 `ack_late(held_us: u32) -> bool` uses the strict `timing::DATA_LOW_0.max` boundary
 and is forced inline on Xtensa so the release ISR cannot call flash code.
 
+`ack_release_remainder(now_us: u64, assertion_us: Option<u64>) -> Option<u32>`
+is the pure early-alarm guard, forced inline only on Xtensa. It returns the
+saturating assertion-plus-`ACK_LOW` distance only within `1..=ACK_LOW`, with
+more than 10 us remaining and no future assertion; otherwise it releases.
+Missing assertion time, on-time/late alarms, invalid remainders and failed
+hardware re-arms all fail towards release.
+
 `pin_high_age(t_us: u64, last_high_us: Option<u64>) -> Option<u32>` returns
 the saturating age of the task's last High GPIO read (clamped to `u32::MAX`),
 or `None` before that first observation. It is forced inline on Xtensa for the
@@ -415,7 +422,8 @@ without a snapshot); `Hardware::ack_held_max_us(&self) -> u32` reads the per-boo
 maximum. The existing ring `take_lost()` delta also accumulates into
 `BusSnapshot.rx.edges_lost`. OTA manual release invalidates the ACK record
 rather than fabricating a release-ISR measurement. The release ISR releases the
-GPIO before reading the clock or updating any evidence/counter.
+GPIO before updating evidence/counters; the GPTimer callback first checks for
+an early alarm using the same ESP timer clock, re-arming only a valid remainder.
 
 Protocol structs remain the one
 wire definition. `CommandResult.id` is now optional and omitted for malformed
@@ -565,9 +573,11 @@ the task immediately. Read-only counters/status use a short snapshot mutex:
 the bus owner only `try_lock`s, so network work cannot block CEC.
 
 GPIO is input/output open-drain with no internal pull resistors; external sink
-pull-up is required. GPIO/RMT resources and their interrupts are initialized on
-main/core 0; `Hardware::arm` binds the bus task's notification handle before
-enabling edges. The GPIO ISR is IRAM, level 3. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
+pull-up is required. GPIO/RMT resources and RMT interrupts are initialized on
+main/core 0. The dedicated ACK GPTimer handle is also created there, but its
+interrupt and the GPIO ISR service are allocated on core 1 in `Hardware::arm`,
+which binds the bus task's notification handle before enabling edges.
+The GPIO ISR is IRAM, level 3. Its 256-entry lock-free SPSC ring uses 32-bit atomic slots
 and release/acquire indices, preserving full 64-bit ESP timer timestamps.
 Drop-newest edge overruns increment telemetry `rx.errors` and reset decoding;
 they are not counted as lost bus events. Event-channel/outbox losses accumulate
@@ -577,7 +587,8 @@ report neither adds a loss nor consumes a sequence. Its next sequence is committ
 only after enqueue. MQTT pending losses are not transferred to the bus owner until
 the current connection's preamble is ready. An overflowing backlog report retains
 its original dropped count rather than turning into a recursive one-loss report.
-The IRAM ISR and ISR-dispatched sample/ACK-release timers perform no allocation,
+The IRAM GPIO ISR, dedicated GPTimer ACK-release callback and ISR-dispatched
+esp_timer sample/wake callbacks perform no allocation,
 logging, serialization or network calls. Timer interrupts are pinned to core 1.
 IDF 5.4.2 requires `ESP_TIMER_SHOW_EXPERIMENTAL` to make the CPU1 affinity
 choices effective; generated bindings were checked for both CPU1 choices.
@@ -596,7 +607,8 @@ time reads/alarm updates in IRAM, and timer objects use internal-capability
 allocation (`esp_timer.c:110`). Boxed ISR context/rings and RMT symbol buffers
 are internal DRAM on the PSRAM-less WROOM; ACK guards/timing constants inline
 as arithmetic/immediates. Compile-time guards require GPIO control in IRAM,
-RMT ISR safety and timer ISR dispatch, preventing a cache-unsafe configuration.
+RMT ISR safety, GPTimer control/handler IRAM safety and esp_timer ISR dispatch,
+preventing a cache-unsafe configuration.
 
 The bus task subscribes itself to the task watchdog at entry to `run`, before
 reconfiguring it to monitor only IDLE0 plus the bus task (`idle_core_mask=1`,
@@ -626,8 +638,14 @@ it observes suspension and detached RMT work finishes; queued work does not
 prevent the reboot. No core Rust API signatures change.
 
 On EOM rise Decoder emits AckDue; the task arms a predicted-time window. The
-actual following falling-edge ISR asserts GPIO low immediately, then starts an
-ISR-dispatched one-shot to release after `timing::ACK_LOW` (1500 us).
+actual following falling-edge ISR asserts GPIO low immediately, publishes the
+assertion, then arms the dedicated 1-MHz, up-counting GPTimer one-shot for
+`timing::ACK_LOW` (1500 us). Stop, reset count to zero, set alarm action (no
+auto-reload), then start handles normal expiry, suspension and a still-running
+counter. The GPTimer interrupt is level 3 on core 1 like GPIO, so they cannot
+nest. An early callback re-arms only a valid remaining interval beyond 10 us;
+otherwise it releases, including on a failed re-arm. `sample_timer` and
+`wake_timer` remain on esp_timer, and all evidence uses `esp_timer_get_time()`.
 The prediction only guards the valid next-bit period; it never triggers the
 pull-down. The first falling edge consumes the arm even outside the window,
 and the window compares the complete 64-bit timestamp, not its wrapping low word.
