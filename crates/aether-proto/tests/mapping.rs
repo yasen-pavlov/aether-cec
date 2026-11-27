@@ -165,6 +165,12 @@ fn decoding_errors_preserve_known_header_and_partial_bit_count() {
                 pin_high_age_us: None,
                 ack_age_us: None,
                 ack_held_us: None,
+                tmr_int: None,
+                tmr_en: None,
+                tmr_alarm_in_us: None,
+                tmr_isr_in_us: None,
+                tmr_task_in_us: None,
+                ack_due_in_us: None,
             }
         );
     }

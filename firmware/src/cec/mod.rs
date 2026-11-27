@@ -286,14 +286,12 @@ impl Runner {
                 t_us,
                 pin,
                 pin_high_age_us,
-                ack_age_us,
-                ack_held_us,
                 ..
             } = &mut event
             {
                 *pin = Some(self.hardware.level().into());
                 *pin_high_age_us = aether_logic::cec::pin_high_age(*t_us, self.last_pin_high_us);
-                self.hardware.ack_evidence(*t_us, ack_age_us, ack_held_us);
+                self.hardware.ack_evidence(&mut event);
             }
             self.publish(event);
         }

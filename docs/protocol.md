@@ -298,14 +298,16 @@ and are attached to every decoder error (`start_bit`, `bit_timing`, `eom_missing
 ```json
 {"ev":"err","seq":830,"t_us":49000000,"kind":"line_low","from":8,"to":0,"bits":16,
  "same_level":false,"dur_us":5042,"gap_us":0,"bit":9,"hist":[604,1796,1504,896,604,1796,1507,893],
- "pin":"low","pin_high_age_us":5310,"ack_age_us":5042}
+ "pin":"low","pin_high_age_us":5310,"ack_age_us":5042,
+ "tmr_int":true,"tmr_en":false,"tmr_alarm_in_us":-3540,
+ "tmr_isr_in_us":-3538,"tmr_task_in_us":20000,"ack_due_in_us":-3542}
 ```
 
 | Key | Meaning |
 |---|---|
 | `pin` | `high` \| `low`: the GPIO input level read by the bus task when it emitted the error. For timeouts this is the line at detection; for edge-triggered errors it is read after the failing edge was drained (µs to ms later) |
-| `ack_age_us` | µs from the bridge's most recent follower-ACK assertion (the edge ISR drove the line low) to this error's `t_us`, saturating at 0. Present only when that assertion is at most 100 000 µs (`STUCK_LOW`) old |
-| `ack_held_us` | how long that ACK held the line: assertion to the release ISR. Present only with `ack_age_us`, and only once the release has run; absent = still asserted when the error was emitted |
+| `ack_age_us` | µs from the bridge's most recent follower-ACK assertion (the edge ISR drove the line low) to this error's `t_us`, saturating at 0. Present only when the coherent record agrees at both reads and the assertion is at most 100 000 µs (`STUCK_LOW`) old at the event; a delayed capture does not change this existing cutoff |
+| `ack_held_us` | how long that ACK held the line: assertion to the release ISR. Present only with `ack_age_us`, and only once the release has run; absent with an ACK age = still asserted at capture |
 | `pin_high_age_us` | µs from the last time the bus task itself read the pin High to this error's `t_us`, saturating at 0 and at u32::MAX; absent until the first High read of the boot. The task reads the pin once per loop pass (about once per millisecond), independent of the edge interrupt and of the decoder. For edge-triggered errors `t_us` is the failing edge's time, so 0 can mean the High read came after `t_us` |
 
 Reading a `line_low` at `bit:9` on a frame the bridge acknowledges. The ACK-slot fall is both the
@@ -323,8 +325,58 @@ decoder's last fall and the assertion timestamp, so for the failing slot `ack_ag
 good ACK on any other block the initiator keeps sending, so the line can be low again at
 detection. The task's High reads are about a millisecond apart; a High read proves the line
 rose, while all-low reads over one detection interval make a held line likely, not certain.
-The ISRs publish the ACK evidence without locks; a second ACK between the reads can mix two
-assertions. It is diagnostic, not a protocol guarantee.
+The ACK evidence is captured coherently under ESP-IDF's timer hardware lock,
+not the timer-list lock. One critical section reads, in order: ACK state and
+assertion time; `now` (the same counter reader used by `esp_timer_get_time`);
+masked LACT interrupt status; `ALARM_EN`; hardware alarm LO then HI;
+cached TASK deadline (`timestamp_id[0]`); cached ISR deadline (`timestamp_id[1]`);
+then ACK state and assertion time again, and the completed hold duration.
+The state and assertion must agree at both reads; the ages and timer evidence
+therefore describe one ACK, never a mixture of two assertions.
+
+Timer evidence (added 2026-11-22; optional, omitted by older firmware):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `tmr_int` | bool | LACT masked interrupt status bit set at capture; presence marks the captured group |
+| `tmr_en` | bool | LACT `ALARM_EN` set at capture |
+| `tmr_alarm_in_us` | i32 | hardware alarm register minus counter, in µs, saturating; negative = already passed. Register ticks are converted at 2 ticks/µs, truncating to µs like IDF's counter |
+| `tmr_isr_in_us` | i32 | IDF's cached next ISR-dispatch deadline (`timestamp_id[1]`) minus capture `now`, saturating; absent when the deadline is `UINT64_MAX` |
+| `tmr_task_in_us` | i32 | same for the TASK-dispatch deadline (`timestamp_id[0]`) |
+| `ack_due_in_us` | i32 | ACK assertion time + `ACK_LOW` (1 500 µs) minus capture `now`, saturating; negative = overdue |
+
+`tmr_int`, `tmr_en`, `tmr_alarm_in_us` and `ack_due_in_us` are present together,
+only on decoder errors and only if the ACK state was held at both reads with
+the same assertion time, at most `STUCK_LOW` old at capture. Cached ISR/TASK keys occur
+only inside that group and only when their individual deadlines exist.
+All `*_in_us` values use capture `now`, not the event's `t_us`.
+No timer-list lock, logging or allocation occurs inside the section. Its only
+register write is the counter latch used by IDF's time reader; it does not
+acknowledge an interrupt, reprogram an alarm or change ACK scheduling.
+
+Reading the timer group (a timer interrupt is shared by **every** deadline):
+
+| Evidence | Interpretation |
+|---|---|
+| `tmr_int:false`, `ack_due_in_us < 0`, ISR deadline absent or later than ACK due by more than tolerance | ACK release deadline is missing from IDF's bookkeeping |
+| `tmr_int:false`, ISR deadline equals ACK due within tolerance, and hardware alarm does not match the release deadline | Bookkeeping intact, hardware not programmed for that deadline |
+| `tmr_int:true`, ISR deadline equals ACK due within tolerance and is negative | Consistent with the ACK's alarm raised and not yet delivered; not conclusive alone |
+| `tmr_int:true` otherwise | A timer interrupt was pending for some deadline; no conclusion about the ACK |
+
+`tmr_en:false` alone does not establish missing hardware programming. If the alarm
+value matches the release deadline and has passed, the enable bit may merely have
+cleared itself when the alarm fired; read it together with `tmr_int`. Self-clearing
+is documented for the timer group's general-purpose timers, but is **unverified
+for LACT** (IDF v5.4.2 `soc/timer_group_struct.h`: general timers at lines 20–25,
+LACT's reserved description at lines 402–405).
+
+Use **10 µs** as a reading aid for comparisons: the timer's stored deadline is
+taken a few µs after the edge ISR's assertion timestamp, plus possible lock wait.
+This is not a bound; firmware publishes raw values without classification.
+Larger differences need context. An earlier TASK
+deadline can legitimately own the hardware alarm, so compare both cached deadlines
+before attributing a mismatch to a fault. An absent `tmr_task_in_us` while
+TASK-dispatch timers are armed is itself notable.
 
 ### 5.4 `line` — bus line state changes
 

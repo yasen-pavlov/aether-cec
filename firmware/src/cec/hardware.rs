@@ -1,6 +1,8 @@
 //! Unsafe ESP-IDF boundary, imported as ffi::cec. All contexts are retained
 //! for the lifetime of the bus task; callbacks never borrow movable task data.
-use aether_logic::cec::{Block, EdgeRing, ack_evidence, ack_in_window, ack_late};
+use aether_logic::cec::{
+    AckCapture, AckEvidence, Block, EdgeRing, ack_evidence, ack_in_window, ack_late,
+};
 use cec_core::{
     rx::{Edge, Level},
     timing,
@@ -14,12 +16,34 @@ use std::{
     },
 };
 
+// IDF v5.4.2: components/esp_timer/include/esp_private/esp_timer_private.h:50,55;
+// src/esp_timer_impl_common.c:14,20,22-33 (relative to components/esp_timer).
+// These private symbols are not exposed by esp-idf-sys's generated bindings.
+unsafe extern "C" {
+    fn esp_timer_private_lock();
+    fn esp_timer_private_unlock();
+    static mut timestamp_id: [u64; 2];
+}
+
+// ESP32-only LACT module 0, 2 ticks/us:
+// components/esp_hw_support/include/esp_private/systimer.h:14,26.
+// Base: components/soc/esp32/register/soc/reg_base.h:43;
+// offsets/bits: components/soc/esp32/register/soc/timer_group_reg.h:
+// CONFIG:396, ALARM_EN:435, ALARMLO:490, ALARMHI:498, INT_ST:582, LACT_INT_ST:585.
+const LACT_CONFIG: *const u32 = 0x3ff5_f070 as *const u32;
+const LACT_ALARM_LO: *const u32 = 0x3ff5_f084 as *const u32;
+const LACT_ALARM_HI: *const u32 = 0x3ff5_f088 as *const u32;
+const LACT_INT_ST: *const u32 = 0x3ff5_f0a0 as *const u32;
+const LACT_ALARM_EN: u32 = 1 << 10;
+const LACT_INT: u32 = 1 << 3;
+
 #[cfg(not(all(
     esp_idf_gpio_ctrl_func_in_iram,
     esp_idf_rmt_isr_iram_safe,
-    esp_idf_esp_timer_supports_isr_dispatch_method
+    esp_idf_esp_timer_supports_isr_dispatch_method,
+    esp_idf_esp_timer_isr_affinity_cpu1
 )))]
-compile_error!("CEC interrupts require GPIO/RMT IRAM safety and esp_timer ISR dispatch");
+compile_error!("CEC interrupts require GPIO/RMT IRAM safety and esp_timer ISR dispatch on core 1");
 
 pub struct Interrupts {
     // ESP32-WROOM has no PSRAM: this boxed context and both rings are internal
@@ -35,8 +59,8 @@ pub struct Interrupts {
     ack_armed: AtomicBool,
     ack_active: AtomicBool,
     ack_count: AtomicU32,
-    // Independent diagnostic words: 0 unavailable, 1 held, 2 released.
-    // Release/acquire publishes payloads; a concurrent new ACK can mix records.
+    // Diagnostic words: 0 unavailable, 1 held, 2 released. The task captures
+    // them under the timer hardware lock, masking their same-core ISR writers.
     ack_evidence_state: AtomicU32,
     ack_assert_low: AtomicU32,
     ack_assert_high: AtomicU32,
@@ -416,18 +440,67 @@ impl Hardware {
     pub fn ack_count(&self) -> u32 {
         self.interrupts.ack_count.swap(0, Ordering::Relaxed)
     }
-    /// Best-effort diagnostic snapshot, never a lock or retry in an ISR.
-    /// A new assertion during these loads may mix records (protocol §5.3).
-    pub fn ack_evidence(&self, t_us: u64, age: &mut Option<u32>, held: &mut Option<u32>) {
-        let context = &self.interrupts;
-        let state = context.ack_evidence_state.load(Ordering::Acquire);
-        let assertion = u64::from(context.ack_assert_low.load(Ordering::Relaxed))
-            | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32);
-        (*age, *held) = ack_evidence(
+    /// Only decoder errors reach this capture via `Runner::rx`; no timer-list lock is taken.
+    pub fn ack_evidence(&self, event: &mut aether_proto::BusEvent) {
+        let aether_proto::BusEvent::Err {
             t_us,
-            (state != 0).then_some(assertion),
-            (state == 2).then(|| context.ack_held_us.load(Ordering::Relaxed)),
-        );
+            ack_age_us,
+            ack_held_us,
+            tmr_int,
+            tmr_en,
+            tmr_alarm_in_us,
+            tmr_isr_in_us,
+            tmr_task_in_us,
+            ack_due_in_us,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let context = &self.interrupts;
+        let capture;
+        // Safe on the bus core: GPIO edge and timer ISRs run on this core and
+        // are masked. Other-core timestamp_id writers hold this same lock
+        // (esp_timer_impl_lac.c:133-160; esp_timer_impl_common.c:41-63).
+        // It is recursive for its owning core (components/esp_hw_support/
+        // include/spinlock.h:104-113). Do not take a timer-list lock here:
+        // timer insertion takes list -> hardware, never the reverse.
+        // esp_timer_get_time aliases the counter reader, which only reads
+        // registers and writes the counter latch, with no lock or allocation
+        // (components/esp_timer/src/esp_timer_impl_lac.c:95-131).
+        unsafe {
+            esp_timer_private_lock();
+            capture = AckCapture {
+                state_before: context.ack_evidence_state.load(Ordering::Acquire),
+                assert_before_us: u64::from(context.ack_assert_low.load(Ordering::Relaxed))
+                    | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32),
+                now_us: sys::esp_timer_get_time() as u64,
+                interrupt: LACT_INT_ST.read_volatile() & LACT_INT != 0,
+                alarm_enabled: LACT_CONFIG.read_volatile() & LACT_ALARM_EN != 0,
+                alarm_ticks: u64::from(LACT_ALARM_LO.read_volatile())
+                    | (u64::from(LACT_ALARM_HI.read_volatile()) << 32),
+                task_deadline_us: (&raw const timestamp_id).cast::<u64>().read_volatile(),
+                isr_deadline_us: (&raw const timestamp_id)
+                    .cast::<u64>()
+                    .add(1)
+                    .read_volatile(),
+                state_after: context.ack_evidence_state.load(Ordering::Acquire),
+                assert_after_us: u64::from(context.ack_assert_low.load(Ordering::Relaxed))
+                    | (u64::from(context.ack_assert_high.load(Ordering::Relaxed)) << 32),
+                held_us: context.ack_held_us.load(Ordering::Relaxed),
+            };
+            esp_timer_private_unlock();
+        }
+        let mut evidence = AckEvidence::default();
+        ack_evidence(*t_us, &capture, &mut evidence);
+        *ack_age_us = evidence.ack_age_us;
+        *ack_held_us = evidence.ack_held_us;
+        *tmr_int = evidence.tmr_int;
+        *tmr_en = evidence.tmr_en;
+        *tmr_alarm_in_us = evidence.tmr_alarm_in_us;
+        *tmr_isr_in_us = evidence.tmr_isr_in_us;
+        *tmr_task_in_us = evidence.tmr_task_in_us;
+        *ack_due_in_us = evidence.ack_due_in_us;
     }
     /// Drain a 32-bit ISR delta into the bus task's per-boot u64 counter.
     pub fn take_ack_late(&self) -> u32 {

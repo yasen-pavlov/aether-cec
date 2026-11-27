@@ -998,29 +998,182 @@ fn only_real_backlog_overflow_is_lost_and_reports_preserve_original_count() {
     assert!(losses.report(&mut bridge, 3, |_| panic!("no recursive overrun")));
 }
 
-#[test]
-fn ack_evidence_is_recent_saturating_and_only_completed_after_release() {
-    use aether_logic::cec::ack_evidence;
+fn ack_capture() -> aether_logic::cec::AckCapture {
     let assertion = 1_u64 << 33;
-    let held = Some(timing::ACK_LOW);
-    let limit = u64::from(timing::STUCK_LOW);
-    assert_eq!(ack_evidence(assertion, None, held), (None, None));
+    let due = assertion + u64::from(timing::ACK_LOW);
+    aether_logic::cec::AckCapture {
+        state_before: 1,
+        assert_before_us: assertion,
+        now_us: assertion + 5000,
+        interrupt: true,
+        alarm_enabled: false,
+        alarm_ticks: due * 2,
+        task_deadline_us: due + 100,
+        isr_deadline_us: due + 3,
+        state_after: 1,
+        assert_after_us: assertion,
+        held_us: timing::ACK_LOW,
+    }
+}
+
+fn evidence(t_us: u64, capture: &aether_logic::cec::AckCapture) -> aether_logic::cec::AckEvidence {
+    let mut result = aether_logic::cec::AckEvidence::default();
+    aether_logic::cec::ack_evidence(t_us, capture, &mut result);
+    result
+}
+
+#[test]
+fn ack_capture_uses_one_assertion_and_capture_time_not_event_time_for_deadlines() {
+    use aether_logic::cec::AckEvidence;
+    let capture = ack_capture();
+    let age = 2000;
+    let due = i32::try_from(timing::ACK_LOW).unwrap() - 5000;
     assert_eq!(
-        ack_evidence(assertion, Some(assertion), None),
-        (Some(0), None)
+        evidence(capture.assert_before_us + age, &capture),
+        AckEvidence {
+            ack_age_us: Some(u32::try_from(age).unwrap()),
+            ack_held_us: None,
+            tmr_int: Some(true),
+            tmr_en: Some(false),
+            tmr_alarm_in_us: Some(due),
+            tmr_isr_in_us: Some(due + 3),
+            tmr_task_in_us: Some(due + 100),
+            ack_due_in_us: Some(due),
+        }
     );
     assert_eq!(
-        ack_evidence(assertion - 1, Some(assertion), held),
-        (Some(0), held)
+        evidence(capture.assert_before_us - 1, &capture).ack_age_us,
+        Some(0)
     );
+}
+
+#[test]
+fn ack_capture_rejects_changed_states_assertions_and_stale_records() {
+    use aether_logic::cec::{AckEvidence, ack_evidence};
+    let capture = ack_capture();
+    for (before, after) in [(0, 0), (0, 1), (1, 0), (1, 2), (2, 1), (3, 3)] {
+        let mut changed = capture.clone();
+        changed.state_before = before;
+        changed.state_after = after;
+        assert_eq!(evidence(changed.now_us, &changed), AckEvidence::default());
+    }
+    let mut changed = capture.clone();
+    changed.assert_after_us += 1;
+    assert_eq!(evidence(changed.now_us, &changed), AckEvidence::default());
+    changed = capture.clone();
+    // An event older than the cutoff clears every field in a reused output.
+    let mut result = evidence(capture.now_us, &capture);
+    ack_evidence(
+        changed.assert_before_us + u64::from(timing::STUCK_LOW) + 1,
+        &changed,
+        &mut result,
+    );
+    assert_eq!(result, AckEvidence::default());
+    changed = capture;
+    changed.now_us = changed.assert_before_us + u64::from(timing::STUCK_LOW);
+    let result = evidence(changed.now_us, &changed);
+    assert_eq!(result.ack_age_us, Some(timing::STUCK_LOW));
+    assert_eq!(result.tmr_int, Some(true));
+}
+
+#[test]
+fn released_ack_has_coherent_age_and_hold_but_no_timer_group() {
+    use aether_logic::cec::AckEvidence;
+    let mut capture = ack_capture();
+    capture.state_before = 2;
+    capture.state_after = 2;
+    capture.held_us = u32::MAX;
     assert_eq!(
-        ack_evidence(assertion + limit, Some(assertion), held),
-        (Some(timing::STUCK_LOW), held)
+        evidence(capture.now_us, &capture),
+        AckEvidence {
+            ack_age_us: Some(5000),
+            ack_held_us: Some(u32::MAX),
+            ..AckEvidence::default()
+        }
     );
+}
+
+#[test]
+fn delayed_capture_preserves_event_ages_but_omits_stale_timer_group() {
+    use aether_logic::cec::AckEvidence;
+    let mut capture = ack_capture();
+    let event_age = u64::from(timing::STUCK_LOW) - 1000;
+    let event_us = capture.assert_before_us + event_age;
+    capture.now_us = event_us + 2000;
+    for state in [1, 2] {
+        capture.state_before = state;
+        capture.state_after = state;
+        assert_eq!(
+            evidence(event_us, &capture),
+            AckEvidence {
+                ack_age_us: Some(99000),
+                ack_held_us: (state == 2).then_some(capture.held_us),
+                ..AckEvidence::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn timer_capture_preserves_false_bits_and_independently_absent_deadlines() {
+    let mut capture = ack_capture();
+    capture.interrupt = false;
+    capture.alarm_enabled = true;
+    for (task, isr) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, u64::MAX), (0, 0)] {
+        capture.task_deadline_us = task;
+        capture.isr_deadline_us = isr;
+        let result = evidence(capture.now_us, &capture);
+        assert_eq!(result.tmr_int, Some(false));
+        assert_eq!(result.tmr_en, Some(true));
+        assert_eq!(
+            result.tmr_task_in_us,
+            (task != u64::MAX).then_some(i32::MIN)
+        );
+        assert_eq!(result.tmr_isr_in_us, (isr != u64::MAX).then_some(i32::MIN));
+    }
+}
+
+#[test]
+fn timer_deadlines_convert_ticks_and_saturate_signed_distances_at_boundaries() {
+    let mut capture = ack_capture();
+    let now = capture.now_us;
+    for delta in [
+        i64::from(i32::MIN) - 1,
+        i64::from(i32::MIN),
+        -1,
+        0,
+        1,
+        i64::from(i32::MAX),
+        i64::from(i32::MAX) + 1,
+    ] {
+        let deadline = now.checked_add_signed(delta).unwrap();
+        let expected =
+            i32::try_from(delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap();
+        // The odd tick is truncated just as IDF truncates its counter to us.
+        capture.alarm_ticks = deadline * 2 + 1;
+        capture.task_deadline_us = deadline;
+        capture.isr_deadline_us = deadline;
+        let result = evidence(now, &capture);
+        assert_eq!(result.tmr_alarm_in_us, Some(expected));
+        assert_eq!(result.tmr_task_in_us, Some(expected));
+        assert_eq!(result.tmr_isr_in_us, Some(expected));
+    }
+    capture.isr_deadline_us = u64::MAX - 1;
+    capture.task_deadline_us = 0;
+    capture.alarm_ticks = u64::MAX;
+    let result = evidence(now, &capture);
+    assert_eq!(result.tmr_isr_in_us, Some(i32::MAX));
+    assert_eq!(result.tmr_task_in_us, Some(i32::MIN));
+    assert_eq!(result.tmr_alarm_in_us, Some(i32::MAX));
+    capture.now_us = capture.assert_before_us;
     assert_eq!(
-        ack_evidence(assertion + limit + 1, Some(assertion), held),
-        (None, None)
+        evidence(now, &capture).ack_due_in_us,
+        Some(i32::try_from(timing::ACK_LOW).unwrap())
     );
+    capture.now_us = u64::MAX;
+    capture.assert_before_us = u64::MAX - 1;
+    capture.assert_after_us = capture.assert_before_us;
+    assert_eq!(evidence(u64::MAX, &capture).ack_due_in_us, Some(0));
 }
 
 #[test]

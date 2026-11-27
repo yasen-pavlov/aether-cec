@@ -294,13 +294,15 @@ buffer. IDs unavailable to the executor are omitted, including malformed input
 and `id_too_long`; local events also omit id.
 
 Firmware-only receive evidence extends `BusEvent::Err` with
-`pin: Option<Level>`, `pin_high_age_us: Option<u32>`, `ack_age_us: Option<u32>`
-and `ack_held_us: Option<u32>`. The core-event conversion leaves all four `None`;
+`pin: Option<Level>`, `pin_high_age_us: Option<u32>`, `ack_age_us: Option<u32>`,
+`ack_held_us: Option<u32>`, `tmr_int: Option<bool>`, `tmr_en: Option<bool>`,
+and `tmr_alarm_in_us`, `tmr_isr_in_us`, `tmr_task_in_us`, `ack_due_in_us` (each
+`Option<i32>`). The core-event conversion leaves all ten `None`;
 `Runner::rx` fills them after conversion, using task-side GPIO observations and
-the latest follower-ACK record. `RxCounters` adds `ack_late: Option<u64>`,
-`ack_held_max_us: Option<u32>` and `edges_lost: Option<u64>`. All seven fields
-default to `None` on decode and are omitted on encode when absent; firmware
-snapshots always include the counters.
+one coherent follower-ACK/timer capture. `RxCounters` adds `ack_late: Option<u64>`,
+`ack_held_max_us: Option<u32>` and `edges_lost: Option<u64>`. All evidence and
+counter fields default to `None` on decode and are omitted on encode when absent;
+firmware snapshots always include the counters.
 
 `no_std` + `alloc`-free: strings are `heapless::String<N>` with the wire bounds
 (`id` 16, `osd` 14, `node` 16, `fw` 24, reasons 32), except lenient ingress above.
@@ -346,13 +348,24 @@ neither `serde_json` nor serde's `alloc` feature.
 merge/validation, bounded quoted-console parsing, command plans, validated TX
 submission, bounded MQTT reassembly, CEC executor primitives and runtime snapshots.
 
-`aether_logic::cec::ack_evidence(t_us: u64, assert_us: Option<u64>,
-held_us: Option<u32>) -> (Option<u32>, Option<u32>)` filters ACK evidence:
-age saturates at zero and is included through `timing::STUCK_LOW`, inclusive;
-held duration is included only with a recent assertion and a completed release.
-The evidence helper is forced inline on Xtensa to avoid passing its optional
-timestamp and tuple across the affected stack-argument ABI; host builds use an
-ordinary function so integration-test coverage is attributed correctly.
+`aether_logic::cec::ack_evidence(t_us: u64, capture: &AckCapture,
+evidence: &mut AckEvidence)` replaces the old optional timestamp/tuple interface.
+`AckCapture` contains `state_before: u32`, `assert_before_us: u64`, `now_us: u64`,
+`interrupt: bool`, `alarm_enabled: bool`, `alarm_ticks: u64`,
+`task_deadline_us: u64`, `isr_deadline_us: u64`, `state_after: u32`,
+`assert_after_us: u64`, `held_us: u32`. State values are unavailable (0), held (1),
+released (2). `AckEvidence` contains `ack_age_us`, `ack_held_us` (`Option<u32>`),
+`tmr_int`, `tmr_en` (`Option<bool>`) and the four `*_in_us` keys (`Option<i32>`).
+The helper clears its output, rejects differing states/assertions and records older
+than `STUCK_LOW` at the event, and saturates event age at zero. Released records
+provide age/hold only. Held records provide age and, only if the assertion is also
+at most `STUCK_LOW` old at capture, the timer group; delayed capture never suppresses
+the existing age/hold keys. Hardware ticks divide by 2 as IDF does; deadlines
+subtract capture `now`,
+saturating to `i32`, with `u64::MAX` cached deadlines absent. Assertion + `ACK_LOW`
+uses saturating addition. `deadline_in_us(deadline: u64, now: u64) -> i32` is the
+private signed-distance helper. Both helpers force inlining only on Xtensa;
+captures and outputs pass by reference, preserving host coverage attribution.
 `ack_late(held_us: u32) -> bool` uses the strict `timing::DATA_LOW_0.max` boundary
 and is forced inline on Xtensa so the release ISR cannot call flash code.
 
@@ -383,14 +396,19 @@ A proposed GPIO read immediately after release in the ISR was rejected:
 the open-drain line is still rising 1–2 µs after release, so healthy ACKs would
 read Low. No post-release ISR sample, waits or extra wakeups are added.
 
-`Hardware::ack_evidence(&self, t_us: u64, age: &mut Option<u32>,
-held: &mut Option<u32>)` copies the diagnostic words without passing a new
-aggregate by value across the firmware ABI. An `AtomicU32` state (unavailable,
-held, released) publishes two relaxed assertion timestamp words and the released
-hold duration with release/acquire ordering. No lock, spin or critical section
-is introduced. A concurrent new assertion can mix timestamp halves or pair an
-assertion with another hold, as permitted by protocol §5.3; a snapshot during
-publication can omit the evidence. This is not used to control the bus.
+`Hardware::ack_evidence(&self, event: &mut aether_proto::BusEvent)` replaces the
+old age/hold output parameters and enriches decoder errors only. The capture and
+pure-helper output stay local; no aggregate crosses a new call boundary by value.
+One `esp_timer_private_lock` / `esp_timer_private_unlock` section (IDF's
+`s_time_update_lock`) reads ACK state/assertion, capture time, masked interrupt
+status, alarm enable, alarm LO/HI, cached TASK/ISR deadlines, then state/assertion
+again and hold duration. Atomic publication remains unchanged. Same-core edge
+and timer ISRs are masked and other-core cached-deadline writers hold the same
+recursive lock, so this replaces the former potentially mixed lock-free snapshot.
+The sole called IDF reader is `esp_timer_get_time`: it only reads the counter
+and writes its latch, taking no timer-list lock. No logging, allocation, interrupt
+acknowledgement or alarm programming occurs inside the section. Conversion and
+event writes occur after unlocking. This evidence is not used to control the bus.
 `Hardware::take_ack_late(&self) -> u32` drains the ISR delta into the task-owned
 `u64` total on each snapshot (a delta could wrap only after 2^32 late releases
 without a snapshot); `Hardware::ack_held_max_us(&self) -> u32` reads the per-boot

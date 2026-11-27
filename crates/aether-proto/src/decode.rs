@@ -92,6 +92,18 @@ struct Object {
     #[serde(default)]
     ack_held_us: Option<u32>,
     #[serde(default)]
+    tmr_int: Option<bool>,
+    #[serde(default)]
+    tmr_en: Option<bool>,
+    #[serde(default)]
+    tmr_alarm_in_us: Option<i32>,
+    #[serde(default)]
+    tmr_isr_in_us: Option<i32>,
+    #[serde(default)]
+    tmr_task_in_us: Option<i32>,
+    #[serde(default)]
+    ack_due_in_us: Option<i32>,
+    #[serde(default)]
     bus: Option<BusState>,
     #[serde(default)]
     hpd: Option<bool>,
@@ -167,6 +179,12 @@ impl<'de> Deserialize<'de> for BusEvent {
                 pin_high_age_us: object.pin_high_age_us,
                 ack_age_us: object.ack_age_us,
                 ack_held_us: object.ack_held_us,
+                tmr_int: object.tmr_int,
+                tmr_en: object.tmr_en,
+                tmr_alarm_in_us: object.tmr_alarm_in_us,
+                tmr_isr_in_us: object.tmr_isr_in_us,
+                tmr_task_in_us: object.tmr_task_in_us,
+                ack_due_in_us: object.ack_due_in_us,
                 hist: object.hist,
             }),
             EventKind::Line => Ok(Self::Line {
